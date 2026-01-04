@@ -741,8 +741,8 @@ async fn advertise<'a, 'b, C: Controller>(
     )?;
 
     let advertise_config = AdvertisementParameters {
-        primary_phy: PhyKind::Le2M,
-        secondary_phy: PhyKind::Le2M,
+        primary_phy: PhyKind::Le1M,
+        secondary_phy: PhyKind::Le1M,
         tx_power: TxPower::Plus8dBm,
         interval_min: Duration::from_millis(200),
         interval_max: Duration::from_millis(200),
@@ -913,13 +913,13 @@ async fn run_ble_keyboard<
     .await;
 }
 
-// Update the PHY to 2M
+// Update the PHY to 1M
 pub(crate) async fn update_ble_phy<P: PacketPool>(
     stack: &Stack<'_, impl Controller + ControllerCmdAsync<LeSetPhy>, P>,
     conn: &Connection<'_, P>,
 ) {
     loop {
-        match conn.set_phy(stack, PhyKind::Le2M).await {
+        match conn.set_phy(stack, PhyKind::Le1M).await {
             Err(BleHostError::BleHost(Error::Hci(error))) => {
                 if 0x2A == error.to_status().into_inner() {
                     // Busy, retry
