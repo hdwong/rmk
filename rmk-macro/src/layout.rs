@@ -481,22 +481,28 @@ pub(crate) fn parse_key(key: String, profiles: &Option<HashMap<String, MorseProf
 
             // Try to find exact match (case-insensitive) in keyboard actions
             // Use strum::VariantNames to automatically get all enum variants
-            if let Some(action) = rmk_types::action::KeyboardAction::VARIANTS.iter()
-                .find(|&&a| a.to_lowercase() == key_lower) {
+            if let Some(action) = rmk_types::action::KeyboardAction::VARIANTS
+                .iter()
+                .find(|&&a| a.to_lowercase() == key_lower)
+            {
                 let action_ident = format_ident!("{}", action);
                 return quote! { ::rmk::kbctrl!(#action_ident) };
             }
 
             // Try to find exact match (case-insensitive) in light actions
-            if let Some(action) = rmk_types::action::LightAction::VARIANTS.iter()
-                .find(|&&a| a.to_lowercase() == key_lower) {
+            if let Some(action) = rmk_types::action::LightAction::VARIANTS
+                .iter()
+                .find(|&&a| a.to_lowercase() == key_lower)
+            {
                 let action_ident = format_ident!("{}", action);
                 return quote! { ::rmk::light!(#action_ident) };
             }
 
             // Try to find exact match (case-insensitive) in special keys
-            if let Some(special_key) = rmk_types::keycode::SpecialKey::VARIANTS.iter()
-                .find(|&&k| k.to_lowercase() == key_lower) {
+            if let Some(special_key) = rmk_types::keycode::SpecialKey::VARIANTS
+                .iter()
+                .find(|&&k| k.to_lowercase() == key_lower)
+            {
                 let key_ident = format_ident!("{}", special_key);
                 return quote! { ::rmk::special!(#key_ident) };
             }
