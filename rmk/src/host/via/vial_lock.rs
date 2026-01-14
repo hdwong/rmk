@@ -41,8 +41,10 @@ impl<'a, const ROW: usize, const COL: usize, const NUM_LAYER: usize, const NUM_E
     }
     pub fn check_unlock(&mut self) -> u8 {
         if self.unlock_keys.is_empty() {
-            warn!("No unlock keys provided");
-            1
+            // warn!("No unlock keys provided");
+            // 1
+            self.unlock();
+            return 0
         } else {
             let mut counter = self.unlock_keys.len().try_into().unwrap();
             for (row, col) in self.unlock_keys {
