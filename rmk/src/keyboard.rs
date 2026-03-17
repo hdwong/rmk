@@ -1637,46 +1637,57 @@ impl<'a> Keyboard<'a>
             use crate::ble::profile::BleProfileAction;
             use crate::channel::BLE_PROFILE_CHANNEL;
             if event.pressed {
-                // Clear Peer is processed when pressed
-                if id == NUM_BLE_PROFILE as u8 + 4 {
-                    #[cfg(all(feature = "split", feature = "_ble"))]
-                    if event.pressed {
-                        // Wait for 5s, if the key is still pressed, clear split peer info
-                        // If there's any other key event received during this period, skip
-                        match select(
-                            embassy_time::Timer::after_millis(5000),
-                            self.keyboard_event_subscriber.next_message_pure(),
-                        )
-                        .await
-                        {
-                            Either::First(_) => {
-                                // Timeout reached, send clear peer message
-                                #[cfg(all(feature = "split", feature = "_ble"))]
-                                publish_event(ClearPeerEvent);
-                                info!("Clear peer");
+                // User0~7: SwitchProfile, User8: NextProfile, User9: PreviousProfile
+                // All require holding 1s to trigger
+                if id <= NUM_BLE_PROFILE as u8 + 1 {
+                    let action = if id < NUM_BLE_PROFILE as u8 {
+                        BleProfileAction::SwitchProfile(id)
+                    } else if id == NUM_BLE_PROFILE as u8 {
+                        BleProfileAction::NextProfile
+                    } else {
+                        BleProfileAction::PreviousProfile
+                    };
+                    match select(embassy_time::Timer::after_millis(1000), KEY_EVENT_CHANNEL.receive()).await {
+                        Either::First(_) => {
+                            if id < NUM_BLE_PROFILE as u8 {
+                                info!("Switch to profile: {}", id);
+                            } else if id == NUM_BLE_PROFILE as u8 {
+                                info!("Next profile action triggered");
+                            } else if id == NUM_BLE_PROFILE as u8 + 1 {
+                                info!("Previous profile action triggered");
                             }
-                            Either::Second(e) => {
-                                // Received a new key event before timeout, add to unprocessed list
-                                if self.unprocessed_events.push(e).is_err() {
-                                    warn!("Unprocessed event queue is full, dropping event");
-                                }
+                            BLE_PROFILE_CHANNEL.send(action).await;
+                        }
+                        Either::Second(e) => {
+                            if self.unprocessed_events.push(e).is_err() {
+                                warn!("Unprocessed event queue is full, dropping event");
+                            }
+                        }
+                    }
+                }
+                // Clear Peer is processed when pressed
+                else if id == NUM_BLE_PROFILE as u8 + 4 {
+                    #[cfg(all(feature = "split", feature = "_ble"))]
+                    // Wait for 5s, if the key is still pressed, clear split peer info
+                    // If there's any other key event received during this period, skip
+                    match select(embassy_time::Timer::after_millis(5000), KEY_EVENT_CHANNEL.receive()).await {
+                        Either::First(_) => {
+                            // Timeout reached, send clear peer message
+                            #[cfg(feature = "controller")]
+                            publish_controller_event(ClearPeerEvent);
+                            info!("Clear peer");
+                        }
+                        Either::Second(e) => {
+                            // Received a new key event before timeout, add to unprocessed list
+                            if self.unprocessed_events.push(e).is_err() {
+                                warn!("Unprocessed event queue is full, dropping event");
                             }
                         }
                     }
                 }
             } else {
                 // Other user keys are processed when released
-                if id < NUM_BLE_PROFILE as u8 {
-                    info!("Switch to profile: {}", id);
-                    // User0~7: Swtich to the specific profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::SwitchProfile(id)).await;
-                } else if id == NUM_BLE_PROFILE as u8 {
-                    // User8: Next profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::NextProfile).await;
-                } else if id == NUM_BLE_PROFILE as u8 + 1 {
-                    // User9: Previous profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::PreviousProfile).await;
-                } else if id == NUM_BLE_PROFILE as u8 + 2 {
+                if id == NUM_BLE_PROFILE as u8 + 2 {
                     // User10: Clear profile
                     BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearProfile).await;
                 } else if id == NUM_BLE_PROFILE as u8 + 3 {
