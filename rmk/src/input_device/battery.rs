@@ -7,6 +7,14 @@ use rmk_types::battery::{BatteryStatus, ChargeState};
 use crate::event::BatteryStatusEvent;
 use crate::event::{BatteryAdcEvent, ChargingStateEvent, publish_event};
 
+/// Cached battery level for immediate read by BLE battery service on connection.
+///
+/// This avoids the initial 0% report that occurs when the BLE subscriber
+/// is created after the first ADC reading has already been published.
+#[cfg(feature = "_ble")]
+pub static BATTERY_LEVEL_CACHE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(0xFF); // 0xFF = not yet available
+
 /// Reads charging state from a GPIO pin and publishes ChargingStateEvent.
 ///
 /// This input device monitors a charging state pin and publishes events when
@@ -150,6 +158,7 @@ impl BatteryProcessor {
                         charge_state,
                         level: Some(battery_percent),
                     };
+                    BATTERY_LEVEL_CACHE.store(battery_percent, core::sync::atomic::Ordering::Release);
                     publish_event(BatteryStatusEvent::from(self.battery_status));
                 }
             }
@@ -160,6 +169,7 @@ impl BatteryProcessor {
                     charge_state: ChargeState::Unknown,
                     level: Some(battery_percent),
                 };
+                BATTERY_LEVEL_CACHE.store(battery_percent, core::sync::atomic::Ordering::Release);
                 publish_event(BatteryStatusEvent::from(self.battery_status));
             }
         }

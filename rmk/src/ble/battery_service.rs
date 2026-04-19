@@ -49,7 +49,20 @@ impl<P: PacketPool> BleBatteryServer<'_, '_, '_, P> {
         // Wait 2 seconds, ensure that gatt server has been started
         Timer::after_secs(2).await;
 
-        // First report after connected
+        // Try to report the cached battery level immediately.
+        // The BatteryProcessor stores the latest level in a static AtomicU8, so we
+        // can read it even if the subscriber missed the first event (which was
+        // published before BLE connected).
+        let cached = crate::input_device::battery::BATTERY_LEVEL_CACHE
+            .load(core::sync::atomic::Ordering::Acquire);
+        if cached != 0xFF {
+            // Cache is valid — send the first notification right away
+            if let Err(e) = self.battery_level.notify(self.conn, &cached).await {
+                error!("Failed to notify cached battery level: {:?}", e);
+            }
+        }
+
+        // First report after connected (waits for a live event)
         let first_report = async {
             loop {
                 if let BatteryStatus::Available { level: Some(level), .. } = self.sub.next_message_pure().await.0 {
