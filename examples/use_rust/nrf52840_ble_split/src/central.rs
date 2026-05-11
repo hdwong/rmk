@@ -23,23 +23,25 @@ use nrf_sdc::{self as sdc, mpsl};
 use panic_probe as _;
 use rand_chacha::ChaCha12Rng;
 use rand_core::SeedableRng;
-use rmk::ble::build_ble_stack;
-use rmk::builtin_processor::led_indicator::KeyboardIndicatorProcessor;
+use rmk::ble::{BleTransport, build_ble_stack};
 use rmk::config::{
     BehaviorConfig, BleBatteryConfig, DeviceConfig, PositionalConfig, RmkConfig, StorageConfig, VialConfig,
 };
 use rmk::debounce::default_debouncer::DefaultDebouncer;
 use rmk::event::*;
-use rmk::futures::future::{join4, join5};
-use rmk::input_device::Runnable;
+use rmk::futures::future::join;
+use rmk::host::HostService;
 use rmk::input_device::adc::{AnalogEventType, NrfAdc};
 use rmk::input_device::battery::BatteryProcessor;
 use rmk::input_device::rotary_encoder::RotaryEncoder;
 use rmk::keyboard::Keyboard;
 use rmk::matrix::Matrix;
-use rmk::split::ble::central::{read_peripheral_addresses, scan_peripherals};
+use rmk::processor::builtin::led_indicator::KeyboardIndicatorProcessor;
+use rmk::processor::builtin::wpm::WpmProcessor;
+use rmk::split::ble::central::scan_peripherals;
 use rmk::split::central::run_peripheral_manager;
-use rmk::{HostResources, KeymapData, initialize_keymap_and_storage, run_all, run_rmk};
+use rmk::usb::UsbTransport;
+use rmk::{HostResources, KeymapData, initialize_keymap_and_storage, run_all};
 use static_cell::StaticCell;
 use vial::{VIAL_KEYBOARD_DEF, VIAL_KEYBOARD_ID};
 
@@ -208,9 +210,11 @@ async fn main(spawner: Spawner) {
     let mut matrix = Matrix::<_, _, _, 4, 7, true>::new(row_pins, col_pins, debouncer);
     // let mut matrix = TestMatrix::<ROW, COL>::new();
     let mut keyboard = Keyboard::new(&keymap);
+    let host_ctx = rmk::host::KeyboardContext::new(&keymap);
+    let mut host_service = HostService::new(&host_ctx, &rmk_config);
 
     // Read peripheral address from storage
-    let peripheral_addrs = read_peripheral_addresses::<1, _, 8, 7, 4, 2>(&mut storage).await;
+    let peripheral_addrs = storage.read_peripheral_addresses::<1>().await;
 
     // Initialize the encoder processor
     let mut adc_device = NrfAdc::new(
@@ -255,19 +259,29 @@ async fn main(spawner: Spawner) {
 
     let mut peripheral_battery_monitor = PeripheralBatteryMonitor {};
 
+    let mut usb_transport = UsbTransport::new(driver, rmk_config.device_config);
+    let mut ble_transport = BleTransport::new(&stack, rmk_config).await;
+    let mut wpm_processor = WpmProcessor::new();
+
     // Start
-    join4(
-        run_all!(matrix, encoder, adc_device),
-        run_all! {
-            batt_proc
-        },
-        keyboard.run(),
-        join5(
+    join(
+        run_all!(
+            matrix,
+            encoder,
+            adc_device,
+            storage,
+            usb_transport,
+            ble_transport,
+            wpm_processor,
+            batt_proc,
+            keyboard,
+            host_service,
+            capslock_led,
+            peripheral_battery_monitor
+        ),
+        join(
             run_peripheral_manager::<4, 7, 4, 0, _>(0, &peripheral_addrs, &stack),
-            run_rmk(&keymap, driver, &stack, &mut storage, rmk_config),
             scan_peripherals(&stack, &peripheral_addrs),
-            capslock_led.run(),
-            peripheral_battery_monitor.run(),
         ),
     )
     .await;

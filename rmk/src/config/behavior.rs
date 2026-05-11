@@ -1,10 +1,9 @@
 use embassy_time::Duration;
 use heapless::Vec;
 use rmk_types::fork::Fork;
-use rmk_types::morse::{MorseMode, MorseProfile};
+use rmk_types::morse::{Morse, MorseMode, MorseProfile};
 
-use crate::combo::Combo;
-use crate::morse::Morse;
+use crate::keyboard::combo::Combo;
 use crate::{COMBO_MAX_NUM, FORK_MAX_NUM, MACRO_SPACE_SIZE, MORSE_MAX_NUM, MOUSE_KEY_INTERVAL, MOUSE_WHEEL_INTERVAL};
 
 /// Config for configurable action behavior
@@ -85,6 +84,9 @@ pub struct OneShotModifiersConfig {
 pub struct CombosConfig {
     pub combos: [Option<Combo>; COMBO_MAX_NUM],
     pub timeout: Duration,
+    /// Cooldown after any key press before a combo can start recording.
+    /// `None` = no idle check (backward compatible). Equivalent to ZMK `require-prior-idle-ms`.
+    pub prior_idle_time: Option<Duration>,
 }
 
 impl Default for CombosConfig {
@@ -92,6 +94,7 @@ impl Default for CombosConfig {
         Self {
             timeout: Duration::from_millis(50),
             combos: core::array::from_fn(|_| None),
+            prior_idle_time: None,
         }
     }
 }

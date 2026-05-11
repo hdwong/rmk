@@ -24,19 +24,20 @@ use nrf_sdc::{self as sdc, mpsl};
 use panic_probe as _;
 use rand_chacha::ChaCha12Rng;
 use rand_core::SeedableRng;
-use rmk::ble::build_ble_stack;
+use rmk::ble::{BleTransport, build_ble_stack};
 use rmk::config::{
     BehaviorConfig, BleBatteryConfig, DeviceConfig, PositionalConfig, RmkConfig, StorageConfig, VialConfig,
 };
 use rmk::debounce::default_debouncer::DefaultDebouncer;
-use rmk::futures::future::join4;
-use rmk::input_device::Runnable;
+use rmk::host::HostService;
 use rmk::input_device::adc::{AnalogEventType, NrfAdc};
 use rmk::input_device::battery::BatteryProcessor;
 use rmk::input_device::rotary_encoder::{DefaultPhase, RotaryEncoder};
 use rmk::keyboard::Keyboard;
 use rmk::matrix::Matrix;
-use rmk::{HostResources, KeymapData, initialize_keymap_and_storage, run_all, run_rmk};
+use rmk::processor::builtin::wpm::WpmProcessor;
+use rmk::usb::UsbTransport;
+use rmk::{HostResources, KeymapData, initialize_keymap_and_storage, run_all};
 use static_cell::StaticCell;
 use vial::{VIAL_KEYBOARD_DEF, VIAL_KEYBOARD_ID};
 
@@ -197,6 +198,8 @@ async fn main(spawner: Spawner) {
     let mut matrix = Matrix::<_, _, _, ROW, COL, true>::new(row_pins, col_pins, debouncer);
     // let mut matrix = TestMatrix::<ROW, COL>::new();
     let mut keyboard = Keyboard::new(&keymap);
+    let host_ctx = rmk::host::KeyboardContext::new(&keymap);
+    let mut host_service = HostService::new(&host_ctx, &rmk_config);
 
     // Initialize the encoder
     let pin_a = Input::new(p.P1_06, embassy_nrf::gpio::Pull::None);
@@ -211,13 +214,21 @@ async fn main(spawner: Spawner) {
     );
     let mut batt_proc = BatteryProcessor::new(2000, 2806);
 
-    join4(
-        run_all!(matrix, encoder, adc_device),
-        run_all! {
-            batt_proc
-        },
-        keyboard.run(), // Keyboard is special
-        run_rmk(&keymap, driver, &stack, &mut storage, rmk_config),
+    let mut usb_transport = UsbTransport::new(driver, rmk_config.device_config);
+    let mut ble_transport = BleTransport::new(&stack, rmk_config).await;
+    let mut wpm_processor = WpmProcessor::new();
+
+    run_all!(
+        matrix,
+        encoder,
+        adc_device,
+        storage,
+        usb_transport,
+        ble_transport,
+        wpm_processor,
+        batt_proc,
+        keyboard,
+        host_service
     )
     .await;
 }

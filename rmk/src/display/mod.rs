@@ -53,7 +53,7 @@
 //! run_all!(matrix, oled);
 //! ```
 
-mod drivers;
+pub mod drivers;
 mod renderers;
 
 #[cfg(feature = "oled_async")]
@@ -61,6 +61,8 @@ pub use display_interface_i2c;
 use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_graphics::prelude::*;
+#[cfg(feature = "lcd_async")]
+pub use lcd_async;
 #[cfg(feature = "oled_async")]
 pub use oled_async;
 pub use renderers::{LogoRenderer, OledRenderer};
@@ -71,6 +73,7 @@ use rmk_types::modifier::ModifierCombination;
 #[cfg(feature = "ssd1306")]
 pub use ssd1306;
 
+use crate::core_traits::Runnable;
 #[cfg(feature = "_ble")]
 use crate::event::BleStatusChangeEvent;
 #[cfg(all(feature = "split", feature = "_ble"))]
@@ -81,7 +84,6 @@ use crate::event::{
 };
 #[cfg(feature = "split")]
 use crate::event::{CentralConnectedEvent, PeripheralConnectedEvent};
-use crate::input_device::Runnable;
 use crate::processor::Processor;
 
 /// Snapshot of keyboard state passed to renderers on every redraw.
@@ -370,6 +372,7 @@ where
 
     async fn on_modifier_event(&mut self, event: ModifierEvent) {
         self.ctx.modifiers = event.modifier;
+        self.render().await;
     }
 
     async fn on_sleep_state_event(&mut self, event: SleepStateEvent) {
@@ -414,6 +417,13 @@ where
     async fn run(&mut self) -> ! {
         use crate::event::EventSubscriber;
         let mut sub = <Self as Processor>::subscriber();
+
+        // Prime from current state after subscribing, so the first render
+        // reflects state that was set before the processor started.
+        #[cfg(feature = "_ble")]
+        {
+            self.ctx.ble_status = crate::state::current_ble_status();
+        }
 
         self.pending_render = true;
         self.render().await;

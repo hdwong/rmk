@@ -19,13 +19,15 @@ use embassy_rp::{bind_interrupts, dma};
 use panic_probe as _;
 use rmk::config::{BehaviorConfig, DeviceConfig, PositionalConfig, RmkConfig, StorageConfig, VialConfig};
 use rmk::debounce::default_debouncer::DefaultDebouncer;
-use rmk::futures::future::join4;
-use rmk::input_device::Runnable;
+use rmk::futures::future::join;
+use rmk::host::HostService;
 use rmk::keyboard::Keyboard;
 use rmk::matrix::Matrix;
+use rmk::processor::builtin::wpm::WpmProcessor;
 use rmk::split::SPLIT_MESSAGE_MAX_SIZE;
 use rmk::split::central::run_peripheral_manager;
-use rmk::{KeymapData, initialize_keymap_and_storage, run_all, run_rmk};
+use rmk::usb::UsbTransport;
+use rmk::{KeymapData, initialize_keymap_and_storage, run_all};
 use static_cell::StaticCell;
 use vial::{VIAL_KEYBOARD_DEF, VIAL_KEYBOARD_ID};
 
@@ -94,13 +96,16 @@ async fn main(_spawner: Spawner) {
     let debouncer = DefaultDebouncer::new();
     let mut matrix = Matrix::<_, _, _, 2, 2, true>::new(row_pins, col_pins, debouncer);
     let mut keyboard = Keyboard::new(&keymap);
+    let host_ctx = rmk::host::KeyboardContext::new(&keymap);
+    let mut host_service = HostService::new(&host_ctx, &rmk_config);
+
+    let mut usb_transport = UsbTransport::new(driver, rmk_config.device_config);
+    let mut wpm_processor = WpmProcessor::new();
 
     // Start
-    join4(
-        run_all!(matrix),
-        keyboard.run(),
+    join(
+        run_all!(matrix, storage, usb_transport, wpm_processor, keyboard, host_service),
         run_peripheral_manager::<2, 1, 2, 2, _>(0, uart_receiver),
-        run_rmk(&keymap, driver, &mut storage, rmk_config),
     )
     .await;
 }

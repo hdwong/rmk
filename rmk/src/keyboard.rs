@@ -12,37 +12,37 @@ use rmk_types::fork::StateBits;
 use rmk_types::keycode::{ConsumerKey, HidKeyCode, KeyCode, SpecialKey, SystemControlKey};
 use rmk_types::led_indicator::LedIndicator;
 use rmk_types::modifier::ModifierCombination;
-use rmk_types::morse::MorseMode;
+use rmk_types::morse::{MorseMode, MorsePattern, TAP};
 use rmk_types::mouse_button::MouseButtons;
 use usbd_hid::descriptor::{MediaKeyboardReport, SystemControlReport};
 
-use crate::channel::KEYBOARD_REPORT_CHANNEL;
-use crate::combo::Combo;
-use crate::config::Hand;
-use crate::descriptor::KeyboardReport;
+use crate::channel::send_hid_report;
+use crate::core_traits::Runnable;
 #[cfg(all(feature = "split", feature = "_ble"))]
 use crate::event::ClearPeerEvent;
 use crate::event::{
     ActionEvent, KeyboardEvent, KeyboardEventPos, ModifierEvent, SubscribableEvent, publish_event, publish_event_async,
 };
-use crate::fork::ActiveFork;
-use crate::hid::Report;
-use crate::input_device::Runnable;
+use crate::hid::{KeyboardReport, Report};
+use crate::keyboard::combo::Combo;
+use crate::keyboard::fork::ActiveFork;
 use crate::keyboard::held_buffer::{HeldBuffer, HeldKey, KeyState};
 use crate::keyboard::mouse::{MouseAction, MouseState};
 use crate::keyboard::oneshot::OneShotState;
 use crate::keyboard_macros::MacroOperation;
 use crate::keymap::KeyMap;
-use crate::morse::{MorsePattern, TAP};
 #[cfg(all(feature = "split", feature = "_ble"))]
 use crate::split::ble::central::update_activity_time;
 use crate::{COMBO_MAX_NUM, FORK_MAX_NUM, MACRO_SPACE_SIZE, boot};
 
-pub(crate) mod combo;
+pub mod combo;
+pub(crate) mod fork;
 pub(crate) mod held_buffer;
 pub(crate) mod morse;
 pub(crate) mod mouse;
 pub(crate) mod oneshot;
+#[cfg(feature = "steno")]
+pub(crate) mod steno;
 
 use crate::keymap::HOLD_BUFFER_SIZE;
 
@@ -53,6 +53,15 @@ pub(crate) static LAST_KEY_TIMESTAMP: Signal<crate::RawMutex, u32> = Signal::new
 /// Led states for the keyboard hid report (its value is received by by the light service in a hid report)
 /// LedIndicator type would be nicer, but that does not have const expr constructor
 pub(crate) static LOCK_LED_STATES: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0u8);
+
+/// Read the current host-driven lock LED state as a typed [`LedIndicator`].
+///
+/// Updated by `run_led_reader` whenever the host sends a SET_REPORT for LEDs;
+/// host services read it synchronously instead of subscribing to
+/// [`LedIndicatorEvent`](crate::event::LedIndicatorEvent).
+pub(crate) fn current_led_indicator() -> LedIndicator {
+    LedIndicator::from_bits(LOCK_LED_STATES.load(core::sync::atomic::Ordering::Relaxed))
+}
 
 /// State machine for Caps Word
 #[derive(Debug, Default)]
@@ -233,6 +242,10 @@ pub struct Keyboard<'a> {
     /// Used for temporarily disabling combos
     combo_on: bool,
 
+    /// Plover HID stenography chord accumulator
+    #[cfg(feature = "steno")]
+    steno: crate::keyboard::steno::StenoChord,
+
     /// Passkey entry state for BLE pairing
     #[cfg(feature = "passkey_entry")]
     passkey_entry_state: crate::ble::passkey::PasskeyEntryState,
@@ -262,12 +275,14 @@ impl<'a> Keyboard<'a> {
             system_control_report: SystemControlReport { usage_id: 0 },
             last_key_code: KeyCode::Hid(HidKeyCode::No),
             combo_on: true,
+            #[cfg(feature = "steno")]
+            steno: crate::keyboard::steno::StenoChord::new(),
             #[cfg(feature = "passkey_entry")]
             passkey_entry_state: crate::ble::passkey::PasskeyEntryState::new(),
         }
     }
 
-    /// Send a keyboard report to the host
+    /// Send a keyboard report to the host.
     async fn send_report(&self, report: Report) {
         // Do not report keypresses to Host in passkey mode
         #[cfg(feature = "passkey_entry")]
@@ -275,7 +290,7 @@ impl<'a> Keyboard<'a> {
             return;
         }
 
-        KEYBOARD_REPORT_CHANNEL.sender().send(report).await
+        send_hid_report(report).await;
     }
 
     /// Get a copy of the next timeout key in the buffer,
@@ -288,23 +303,6 @@ impl<'a> Keyboard<'a> {
                 KeyState::Released(_) | KeyState::EarlyFired(_) | KeyState::WaitingCombo
             ) || (matches!(k.state, KeyState::Pressed(_)) && k.action.is_morse())
         })
-    }
-
-    // Clean up for leak keys, remove non morse keys in ProcessedButReleaseNotReportedYet state from the buffer
-    pub(crate) fn clean_buffered_processed_keys(&mut self) {
-        self.held_buffer.keys.retain(|k| {
-            if k.action.is_morse() {
-                true
-            } else {
-                match k.state {
-                    KeyState::ProcessedButReleaseNotReportedYet(_) => {
-                        warn!("NEED CLEAN: Processing buffering TAP keys with post tap: {:?}", k.event);
-                        false
-                    }
-                    _ => true,
-                }
-            }
-        });
     }
 
     /// Process the latest buffered key.
@@ -361,27 +359,32 @@ impl<'a> Keyboard<'a> {
         #[cfg(feature = "host_security")]
         self.keymap.update_matrix_state(&event);
 
-        // Matrix should process key pressed event first, record the timestamp of key changes
-        if event.pressed {
-            self.set_timer_value(event, Some(Instant::now()));
-        }
         // Update activity time for BLE split central sleep management
         #[cfg(all(feature = "split", feature = "_ble"))]
         update_activity_time();
+
+        // Capture the event time once per event and thread it through.
+        let event_time = Instant::now();
 
         // Process key
         let key_action = &self.keymap.get_action_with_layer_cache(event);
 
         if self.combo_on {
-            if let (Some(key_action), is_combo) = self.process_combo(key_action, event).await {
-                self.process_key_action(&key_action, event, is_combo).await
+            if let (Some(key_action), is_combo) = self.process_combo(key_action, event, event_time).await {
+                self.process_key_action(&key_action, event, is_combo, event_time).await
             }
         } else {
-            self.process_key_action(key_action, event, false).await
+            self.process_key_action(key_action, event, false, event_time).await
         }
     }
 
-    async fn process_key_action(&mut self, key_action: &KeyAction, event: KeyboardEvent, is_combo: bool) {
+    async fn process_key_action(
+        &mut self,
+        key_action: &KeyAction,
+        event: KeyboardEvent,
+        is_combo: bool,
+        event_time: Instant,
+    ) {
         // First, make the decision for current key and held keys
         let (decision_for_current_key, decisions) = self.make_decisions_for_keys(key_action, event);
 
@@ -406,21 +409,20 @@ impl<'a> Keyboard<'a> {
                 } else {
                     key_action
                 };
-                self.process_key_action_inner(key_action, event).await
+                self.process_key_action_inner(key_action, event, event_time).await
             }
             KeyBehaviorDecision::Buffer => {
                 debug!("Current key is buffered");
-                let press_time = Instant::now();
                 let timeout_time = if key_action.is_morse() {
-                    press_time + Self::morse_timeout(self.keymap, key_action, true)
+                    event_time + Self::morse_timeout(self.keymap, key_action, true)
                 } else {
-                    press_time
+                    event_time
                 };
                 self.held_buffer.push(HeldKey::new(
                     event,
                     *key_action,
                     KeyState::Pressed(MorsePattern::default()),
-                    press_time,
+                    event_time,
                     timeout_time,
                 ));
             }
@@ -433,7 +435,7 @@ impl<'a> Keyboard<'a> {
                 } else {
                     key_action
                 };
-                self.process_key_action_inner(key_action, event).await
+                self.process_key_action_inner(key_action, event, event_time).await
             }
             KeyBehaviorDecision::FlowTap => {
                 let action = Self::action_from_pattern(self.keymap, key_action, TAP); //tap action
@@ -622,7 +624,8 @@ impl<'a> Keyboard<'a> {
                         // Note: Morse like actions are not expected here.
                         assert!(!action.is_morse());
                         debug!("Tap Key {:?} now press down, action: {:?}", held_key.event, action);
-                        self.process_key_action_inner(&action, held_key.event).await;
+                        self.process_key_action_inner(&action, held_key.event, held_key.press_time)
+                            .await;
                     }
                 }
                 _ => (),
@@ -721,7 +724,28 @@ impl<'a> Keyboard<'a> {
                                 let _ = decisions.push((held_key.event.pos, HeldKeyDecision::HoldOnOtherKeyPress));
                                 decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
                             }
-                            _ => {}
+                            MorseMode::Normal => {
+                                // Normal mode: resolve a same-hand HRM as tap on press when
+                                // unilateral_tap is enabled, so the roll fires in the correct
+                                // order (HRM tap first, then the new key).
+                                let unilateral_tap = Self::is_unilateral_tap_enabled(self.keymap, &held_key.action);
+                                if unilateral_tap
+                                    && matches!(held_key.state, KeyState::Pressed(_))
+                                    && let KeyboardEventPos::Key(pos1) = held_key.event.pos
+                                    && let KeyboardEventPos::Key(pos2) = event.pos
+                                {
+                                    let hand1 = self.keymap.hand_at(pos1.row as usize, pos1.col as usize);
+                                    let hand2 = self.keymap.hand_at(pos2.row as usize, pos2.col as usize);
+                                    if hand1.is_same_side(hand2) {
+                                        debug!(
+                                            "Unilateral tap on press (Normal mode): resolving HRM as tap for correct roll order"
+                                        );
+                                        let _ = decisions.push((held_key.event.pos, HeldKeyDecision::UnilateralTap));
+                                        decision_for_current_key = KeyBehaviorDecision::CleanBuffer;
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                     } else {
                         let unilateral_tap = Self::is_unilateral_tap_enabled(self.keymap, &held_key.action);
@@ -738,8 +762,7 @@ impl<'a> Keyboard<'a> {
                             let hand1 = self.keymap.hand_at(pos1.row as usize, pos1.col as usize);
                             let hand2 = self.keymap.hand_at(pos2.row as usize, pos2.col as usize);
 
-                            if hand1 == hand2 && hand1 != Hand::Unknown && hand2 != Hand::Bilateral {
-                                //if same hand
+                            if hand1.is_same_side(hand2) {
                                 debug!("Unilateral tap triggered, resolve morse key as tapping");
                                 let _ = decisions.push((held_key.event.pos, HeldKeyDecision::UnilateralTap));
                                 continue;
@@ -761,7 +784,12 @@ impl<'a> Keyboard<'a> {
         (decision_for_current_key, decisions)
     }
 
-    async fn process_key_action_inner(&mut self, original_key_action: &KeyAction, event: KeyboardEvent) {
+    async fn process_key_action_inner(
+        &mut self,
+        original_key_action: &KeyAction,
+        event: KeyboardEvent,
+        event_time: Instant,
+    ) {
         // Start forks
         let key_action = self.try_start_forks(original_key_action, event);
 
@@ -784,7 +812,7 @@ impl<'a> Keyboard<'a> {
                 _ => unreachable!(),
             }
         } else {
-            self.process_key_action_morse(&key_action, event).await;
+            self.process_key_action_morse(&key_action, event, event_time).await;
         }
         self.try_finish_forks(original_key_action, event);
     }
@@ -969,7 +997,7 @@ impl<'a> Keyboard<'a> {
 
             let mut new_event = event;
             new_event.pressed = true;
-            self.process_key_action(&action, new_event, true).await;
+            self.process_key_action(&action, new_event, true, Instant::now()).await;
             debug!("[Combo] {:?} triggered", action);
             embassy_time::Timer::after_millis(20).await;
             // Reset other combos' state
@@ -993,7 +1021,12 @@ impl<'a> Keyboard<'a> {
     /// Check combo before process keys.
     ///
     /// This function returns key action after processing combo, and a boolean indicates that if current returned key action is a combo output
-    async fn process_combo(&mut self, key_action: &KeyAction, event: KeyboardEvent) -> (Option<KeyAction>, bool) {
+    async fn process_combo(
+        &mut self,
+        key_action: &KeyAction,
+        event: KeyboardEvent,
+        event_time: Instant,
+    ) -> (Option<KeyAction>, bool) {
         let current_layer = self.keymap.get_activated_layer();
 
         // First, when releasing a key, check whether there's untriggered combo, if so, triggerer it first
@@ -1022,34 +1055,44 @@ impl<'a> Keyboard<'a> {
                 return (None, true);
             }
         }
+        // Combo idle cooldown: skip combo recording if within idle window
+        // Equivalent to ZMK's require-prior-idle-ms. Key still dispatches normally.
+        let skip_combo = event.pressed
+            && self
+                .keymap
+                .combo_prior_idle_time()
+                .is_some_and(|idle_time| self.last_press_time.elapsed() < idle_time);
 
-        let max_size_of_updated_combo = self.keymap.with_combos_mut(|combos| {
-            combos
-                .iter_mut()
-                .filter_map(|c| c.as_mut())
-                .map(|c| {
-                    if c.update(key_action, event, current_layer) {
-                        info!("Updated combo: {:?}", c);
-                        c.size()
-                    } else {
-                        0
-                    }
-                })
-                .max()
-        });
+        let max_size_of_updated_combo = if skip_combo {
+            None
+        } else {
+            self.keymap.with_combos_mut(|combos| {
+                combos
+                    .iter_mut()
+                    .filter_map(|c| c.as_mut())
+                    .map(|c| {
+                        if c.update(key_action, event, current_layer) {
+                            info!("Updated combo: {:?}", c);
+                            c.size()
+                        } else {
+                            0
+                        }
+                    })
+                    .max()
+            })
+        };
 
         if event.pressed
             && let Some(max_size) = max_size_of_updated_combo
             && max_size > 0
         {
             // If the max_size > 0, there's at least one combo is updated
-            let pressed_time = self.get_timer_value(event).unwrap_or(Instant::now());
             self.held_buffer.push(HeldKey::new(
                 event,
                 *key_action,
                 KeyState::WaitingCombo,
-                pressed_time,
-                pressed_time + self.keymap.combo_timeout(),
+                event_time,
+                event_time + self.keymap.combo_timeout(),
             ));
 
             // Only one combo is updated, and triggered
@@ -1107,7 +1150,7 @@ impl<'a> Keyboard<'a> {
                 //   held), which consumes the release event without sending anything.
                 if releasing_triggered_combo {
                     for output in &combo_outputs {
-                        self.process_key_action(output, event, true).await;
+                        self.process_key_action(output, event, true, event_time).await;
                     }
                     return (None, true);
                 }
@@ -1129,7 +1172,8 @@ impl<'a> Keyboard<'a> {
             if self.held_buffer.keys[i].state == KeyState::WaitingCombo {
                 let key = self.held_buffer.keys.swap_remove(i);
                 debug!("[Combo] Dispatching combo: {:?}", key);
-                self.process_key_action(&key.action, key.event, false).await;
+                self.process_key_action(&key.action, key.event, false, key.press_time)
+                    .await;
             } else {
                 i += 1;
             }
@@ -1248,6 +1292,12 @@ impl<'a> Keyboard<'a> {
                 // Tri-layer upper, turn layer 2 on and update layer state
                 self.process_action_layer_switch(2, event);
                 self.keymap.update_fn_layer_state();
+            }
+            #[cfg(feature = "steno")]
+            Action::Steno(key) => {
+                if let Some(report) = self.steno.on_event(key, event.pressed) {
+                    crate::channel::try_send_hid_report(report);
+                }
             }
             _ => warn!("Action variant not supported: {:?}", action),
         }
@@ -1554,11 +1604,11 @@ impl<'a> Keyboard<'a> {
                 // All require holding 1s to trigger
                 if id <= NUM_BLE_PROFILE as u8 + 1 {
                     let action = if id < NUM_BLE_PROFILE as u8 {
-                        BleProfileAction::SwitchProfile(id)
+                        BleProfileAction::Switch(id)
                     } else if id == NUM_BLE_PROFILE as u8 {
-                        BleProfileAction::NextProfile
+                        BleProfileAction::Next
                     } else {
-                        BleProfileAction::PreviousProfile
+                        BleProfileAction::Previous
                     };
                     match select(
                         embassy_time::Timer::after_millis(1000),
@@ -1585,7 +1635,7 @@ impl<'a> Keyboard<'a> {
                 }
                 // Clear Peer is processed when pressed
                 else if id == NUM_BLE_PROFILE as u8 + 4 {
-                    #[cfg(all(feature = "split", feature = "_ble"))]
+                    #[cfg(all(feature = "split"))]
                     // Wait for 5s, if the key is still pressed, clear split peer info
                     // If there's any other key event received during this period, skip
                     match select(
@@ -1596,7 +1646,7 @@ impl<'a> Keyboard<'a> {
                     {
                         Either::First(_) => {
                             // Timeout reached, send clear peer message
-                            #[cfg(all(feature = "split", feature = "_ble"))]
+                            #[cfg(all(feature = "split"))]
                             publish_event(ClearPeerEvent);
                             info!("Clear peer");
                         }
@@ -1612,10 +1662,12 @@ impl<'a> Keyboard<'a> {
                 // Other user keys are processed when released
                 if id == NUM_BLE_PROFILE as u8 + 2 {
                     // User10: Clear profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearProfile).await;
+                    BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearBond).await;
                 } else if id == NUM_BLE_PROFILE as u8 + 3 {
-                    // User11:
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::ToggleConnection).await;
+                    // Toggle preferred transport (USB <-> BLE);
+                    // only meaningful when both transports exist in this build.
+                    #[cfg(not(feature = "_no_usb"))]
+                    crate::state::toggle_preferred().await;
                 }
             }
         }
@@ -1753,16 +1805,6 @@ impl<'a> Keyboard<'a> {
         } else {
             self.unregister_keycode(key, event);
         }
-    }
-
-    /// Set the timer value for a key event
-    fn set_timer_value(&mut self, event: KeyboardEvent, value: Option<Instant>) {
-        self.keymap.set_timer(event.pos, value);
-    }
-
-    /// Get the timer value for a key event, if the key event is not in the timer, return the current time
-    fn get_timer_value(&self, event: KeyboardEvent) -> Option<Instant> {
-        self.keymap.get_timer(event.pos)
     }
 
     /// Register a key to be sent in hid report.
@@ -1905,14 +1947,13 @@ mod test {
     use rmk_types::morse::{MorseMode, MorseProfile};
 
     use super::*;
-    use crate::combo::{Combo, ComboConfig};
-    use crate::config::{BehaviorConfig, CombosConfig, ForksConfig, PositionalConfig};
+    use crate::config::{BehaviorConfig, ForksConfig, PositionalConfig};
     use crate::event::{KeyPos, KeyboardEvent, KeyboardEventPos};
     use crate::test_support::test_block_on as block_on;
     use crate::{a, k, layer, mo, th, thp};
 
     // Init logger for tests
-    #[ctor::ctor]
+    #[ctor::ctor(unsafe)]
     fn init_log() {
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Debug)
@@ -1938,19 +1979,6 @@ mod test {
                 [a!(No), a!(No), a!(No), a!(No), a!(No), a!(No), a!(No), a!(No), a!(No), a!(No), k!(Left), a!(No), k!(Down), k!(Right)]
             ]),
         ]
-    }
-
-    #[rustfmt::skip]
-    fn get_combos_config() -> CombosConfig {
-        // Define the function to return the appropriate combo configuration
-        CombosConfig {
-            combos: [
-                Some(Combo::new(ComboConfig::new([k!(V), k!(B)], k!(LShift), Some(0)))),
-                Some(Combo::new(ComboConfig::new([k!(R), k!(T)], k!(LAlt), Some(0)))),
-                None, None, None, None, None, None
-            ],
-            timeout: Duration::from_millis(100),
-        }
     }
 
     fn create_test_keyboard_with_config(config: BehaviorConfig) -> Keyboard<'static> {
@@ -1982,10 +2010,6 @@ mod test {
             fork: cfg,
             ..BehaviorConfig::default()
         })
-    }
-
-    fn event(row: u8, col: u8, pressed: bool) -> KeyboardEvent {
-        KeyboardEvent::key(row, col, pressed)
     }
 
     #[test]

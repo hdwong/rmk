@@ -1,14 +1,13 @@
-use embassy_time::{Instant, Timer};
+use embassy_time::Timer;
 use embedded_hal;
 use embedded_hal::digital::InputPin;
 use rmk_macro::input_device;
 #[cfg(feature = "async_matrix")]
-use {embassy_futures::select::select_slice, embedded_hal_async::digital::Wait, heapless::Vec};
+use {embassy_futures::select::select_slice, embassy_time::Instant, embedded_hal_async::digital::Wait, heapless::Vec};
 
-use crate::MatrixTrait;
+use super::{KeyState, MatrixTrait};
 use crate::debounce::{DebounceState, DebouncerTrait};
 use crate::event::KeyboardEvent;
-use crate::matrix::KeyState;
 
 /// DirectPinMartex only has input pins.
 #[input_device(publish = KeyboardEvent)]
@@ -28,7 +27,8 @@ pub struct DirectPinMatrix<
     debouncer: D,
     /// Key state matrix
     key_states: [[KeyState; COL]; ROW],
-    /// Start scanning
+    /// Start scanning — used by async-matrix wait gating only.
+    #[cfg(feature = "async_matrix")]
     scan_start: Option<Instant>,
     /// Pin active level
     low_active: bool,
@@ -53,6 +53,7 @@ impl<
             direct_pins,
             debouncer,
             key_states: [[KeyState::new(); COL]; ROW],
+            #[cfg(feature = "async_matrix")]
             scan_start: None,
             low_active,
             scan_pos: (0, 0),

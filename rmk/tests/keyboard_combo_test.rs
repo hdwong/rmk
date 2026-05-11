@@ -1,8 +1,8 @@
 pub mod common;
 
 use embassy_time::Duration;
-use rmk::combo::{Combo, ComboConfig};
 use rmk::config::{BehaviorConfig, CombosConfig, MorsesConfig, OneShotConfig};
+use rmk::keyboard::combo::{Combo, ComboConfig};
 use rmk::types::keycode::HidKeyCode;
 use rmk::types::modifier::ModifierCombination;
 use rmk::{k, osm, th};
@@ -75,6 +75,7 @@ pub fn get_combos_config() -> CombosConfig {
             None,
         ],
         timeout: Duration::from_millis(100),
+        prior_idle_time: None,
     }
 }
 
@@ -322,6 +323,7 @@ fn test_taphold_with_combo() {
                         ))), None, None, None, None, None, None, None
                     ],
                     timeout: Duration::from_millis(50),
+                    prior_idle_time: None,
                 },
                 ..Default::default()
             };
@@ -364,6 +366,7 @@ fn test_re_press_combo_key_while_triggered_does_not_leak_to_hid() {
             None,
         ],
         timeout: Duration::from_millis(40),
+        prior_idle_time: None,
     };
     key_sequence_test! {
         keyboard: create_test_keyboard_with_config(BehaviorConfig {
@@ -420,6 +423,7 @@ fn test_overlapping_triggered_combos_release_all_outputs() {
             None,
         ],
         timeout: Duration::from_millis(40),
+        prior_idle_time: None,
     };
     key_sequence_test! {
         keyboard: create_test_keyboard_with_config(BehaviorConfig {

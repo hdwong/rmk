@@ -19,7 +19,7 @@
 //! - [`led_indicator`] — `LedIndicator` bitfield
 //! - [`battery`] — `BatteryStatus`, `ChargeState`
 //! - [`ble`] — `BleStatus`, `BleState`
-//! - [`connection`] — `ConnectionType` (USB/BLE)
+//! - [`connection`] — `ConnectionType` (USB/BLE), `UsbState`, `ConnectionStatus`
 //!
 //! ### Protocol
 //! - [`protocol::vial`] — Vial/Via protocol types
@@ -44,6 +44,8 @@ pub mod modifier;
 pub mod morse;
 pub mod mouse_button;
 pub mod protocol;
+#[cfg(feature = "steno")]
+pub mod steno;
 
 /// Compute the maximum varint-encoded length for a given max value.
 /// Mirrors `postcard`'s internal `varint_size`.

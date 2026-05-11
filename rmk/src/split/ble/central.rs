@@ -7,10 +7,10 @@ use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
-use embedded_storage_async::nor_flash::NorFlash;
-use heapless::{Vec, VecView};
+use heapless::VecView;
 use trouble_host::prelude::*;
 
+use crate::SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS;
 use crate::ble::{SLEEPING_STATE, update_ble_phy, update_conn_params};
 use crate::channel::FLASH_CHANNEL;
 use crate::event::{PeripheralConnectedEvent, SleepStateEvent, publish_event};
@@ -18,8 +18,7 @@ use crate::event::{PeripheralConnectedEvent, SleepStateEvent, publish_event};
 use crate::split::ble::PeerAddress;
 use crate::split::driver::{PeripheralManager, SplitDriverError, SplitReader, SplitWriter};
 use crate::split::{SPLIT_MESSAGE_MAX_SIZE, SplitMessage};
-use crate::storage::{FlashOperationMessage, Storage};
-use crate::{CONNECTION_STATE, SPLIT_CENTRAL_SLEEP_TIMEOUT_SECONDS};
+use crate::storage::FlashOperationMessage;
 
 pub(crate) static STACK_STARTED: Signal<crate::RawMutex, bool> = Signal::new();
 pub(crate) static PERIPHERAL_FOUND: Signal<crate::RawMutex, (u8, BdAddr)> = Signal::new();
@@ -128,34 +127,6 @@ pub async fn scan_peripherals<
             select(scanning_fut, update_addrs_fut).await;
         }
     }
-}
-
-/// Read peripheral addresses from storage.
-///
-/// # Arguments
-///
-/// * `storage` - The storage to read peripheral addresses from
-pub async fn read_peripheral_addresses<
-    const PERI_NUM: usize,
-    F: NorFlash,
-    const ROW: usize,
-    const COL: usize,
-    const NUM_LAYER: usize,
-    const NUM_ENCODER: usize,
->(
-    storage: &mut Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>,
-) -> RefCell<Vec<Option<[u8; 6]>, PERI_NUM>> {
-    let mut peripheral_addresses: heapless::Vec<Option<[u8; 6]>, PERI_NUM> = heapless::Vec::new();
-    for id in 0..PERI_NUM {
-        if let Ok(Some(peer_address)) = storage.read_peer_address(id as u8).await
-            && peer_address.is_valid
-        {
-            peripheral_addresses.push(Some(peer_address.address)).unwrap();
-            continue;
-        }
-        peripheral_addresses.push(None).unwrap();
-    }
-    RefCell::new(peripheral_addresses)
 }
 
 // When no peripheral address is saved, the central should first scan for peripheral.
@@ -410,8 +381,6 @@ pub(crate) struct BleSplitCentralDriver<'a, 'b, 'c, C: Controller + ControllerCm
     message_to_peripheral: Characteristic<[u8; SPLIT_MESSAGE_MAX_SIZE]>,
     // Client
     client: &'c GattClient<'a, C, P, 10>,
-    // Cached connection state
-    connection_state: bool,
 }
 
 impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> BleSplitCentralDriver<'a, 'b, 'c, C, P> {
@@ -424,7 +393,6 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Bl
             listener,
             message_to_peripheral,
             client,
-            connection_state: CONNECTION_STATE.load(Ordering::Acquire),
         }
     }
 }
@@ -451,13 +419,6 @@ impl<'a, 'b, 'c, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool> Sp
     for BleSplitCentralDriver<'a, 'b, 'c, C, P>
 {
     async fn write(&mut self, message: &SplitMessage) -> Result<usize, SplitDriverError> {
-        if let SplitMessage::ConnectionState(state) = message {
-            // ConnectionState changed, update cached state and notify peripheral
-            if self.connection_state != *state {
-                self.connection_state = *state;
-            }
-        }
-        // Always sync the connection state to peripheral since central doesn't know the CONNECTION_STATE of the peripheral.
         let mut buf = [0_u8; SPLIT_MESSAGE_MAX_SIZE];
         match postcard::to_slice(&message, &mut buf) {
             Ok(_bytes) => {
@@ -542,25 +503,15 @@ async fn sleep_manager_task<
             // Timeout or received true from CENTRAL_SLEEP signal, enter sleep mode
             info!("Entering sleep mode");
 
-            // Connection parameters are different when central is broadcasting and connected to host
-            let conn_params = if CONNECTION_STATE.load(Ordering::Acquire) {
-                // Connected, the connection interval is 20ms
-                RequestedConnParams {
-                    min_connection_interval: Duration::from_millis(20),
-                    max_connection_interval: Duration::from_millis(20),
-                    max_latency: 200, // 4s
-                    supervision_timeout: Duration::from_secs(9),
-                    ..Default::default()
-                }
-            } else {
-                // Advertising ,the connection interval can be longer
-                RequestedConnParams {
-                    min_connection_interval: Duration::from_millis(200),
-                    max_connection_interval: Duration::from_millis(200),
-                    max_latency: 25, // 5s
-                    supervision_timeout: Duration::from_secs(11),
-                    ..Default::default()
-                }
+            // `conn` is the split central -> peripheral BLE link. While the
+            // central is sleeping, use a longer interval to reduce central-side
+            // radio wakeups; normal params are restored on activity.
+            let conn_params = RequestedConnParams {
+                min_connection_interval: Duration::from_millis(200),
+                max_connection_interval: Duration::from_millis(200),
+                max_latency: 25, // 5s
+                supervision_timeout: Duration::from_secs(11),
+                ..Default::default()
             };
 
             // Update connection parameters

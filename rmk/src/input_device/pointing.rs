@@ -7,7 +7,7 @@ use futures::future::pending;
 use rmk_macro::{input_device, processor};
 use usbd_hid::descriptor::MouseReport;
 
-use crate::channel::KEYBOARD_REPORT_CHANNEL;
+use crate::channel::send_hid_report;
 use crate::event::{Axis, AxisEvent, AxisValType, PointingEvent, PointingSetCpiEvent};
 use crate::hid::Report;
 use crate::keymap::KeyMap;
@@ -303,7 +303,7 @@ impl<'a> PointingProcessor<'a> {
             wheel: 0,
             pan: 0,
         };
-        KEYBOARD_REPORT_CHANNEL.send(Report::MouseReport(mouse_report)).await;
+        send_hid_report(Report::MouseReport(mouse_report)).await;
     }
 }
 
@@ -320,7 +320,7 @@ mod tests {
     use crate::test_support::test_block_on as block_on;
 
     // Init logger for tests
-    #[ctor::ctor]
+    #[ctor::ctor(unsafe)]
     fn init_log() {
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Debug)

@@ -25,11 +25,12 @@ use panic_probe as _;
 use rmk::config::{BehaviorConfig, DeviceConfig, PositionalConfig, RmkConfig, StorageConfig, VialConfig};
 use rmk::debounce::default_debouncer::DefaultDebouncer;
 use rmk::display::DisplayProcessor;
-use rmk::futures::future::join3;
-use rmk::input_device::Runnable;
+use rmk::host::HostService;
 use rmk::keyboard::Keyboard;
 use rmk::matrix::Matrix;
-use rmk::{KeymapData, initialize_keymap_and_storage, run_all, run_rmk};
+use rmk::processor::builtin::wpm::WpmProcessor;
+use rmk::usb::UsbTransport;
+use rmk::{KeymapData, initialize_keymap_and_storage, run_all};
 use vial::{VIAL_KEYBOARD_DEF, VIAL_KEYBOARD_ID};
 
 bind_interrupts!(struct Irqs {
@@ -92,6 +93,8 @@ async fn main(_spawner: Spawner) {
     let debouncer = DefaultDebouncer::new();
     let mut matrix = Matrix::<_, _, _, ROW, COL, true>::new(row_pins, col_pins, debouncer);
     let mut keyboard = Keyboard::new(&keymap);
+    let host_ctx = rmk::host::KeyboardContext::new(&keymap);
+    let mut host_service = HostService::new(&host_ctx, &rmk_config);
 
     // Initialize I2C1 on PIN_2 (SDA) and PIN_3 (SCL)
     let i2c = i2c::I2c::new_async(p.I2C1, p.PIN_3, p.PIN_2, Irqs, i2c::Config::default());
@@ -102,11 +105,18 @@ async fn main(_spawner: Spawner) {
         .into();
     let mut oled = DisplayProcessor::new(display);
 
+    let mut usb_transport = UsbTransport::new(driver, rmk_config.device_config);
+    let mut wpm_processor = WpmProcessor::new();
+
     // Start
-    join3(
-        run_all!(matrix, oled),
-        keyboard.run(),
-        run_rmk(&keymap, driver, &mut storage, rmk_config),
+    run_all!(
+        matrix,
+        oled,
+        storage,
+        usb_transport,
+        wpm_processor,
+        keyboard,
+        host_service
     )
     .await;
 }

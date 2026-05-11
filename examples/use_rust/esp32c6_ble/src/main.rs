@@ -17,15 +17,15 @@ use esp_hal::rng::TrngSource;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
-use rmk::ble::build_ble_stack;
+use rmk::ble::{BleTransport, build_ble_stack};
 use rmk::config::{BehaviorConfig, PositionalConfig, RmkConfig, StorageConfig, VialConfig};
 use rmk::debounce::default_debouncer::DefaultDebouncer;
-use rmk::futures::future::join3;
-use rmk::input_device::Runnable;
+use rmk::host::HostService;
 use rmk::keyboard::Keyboard;
 use rmk::matrix::Matrix;
+use rmk::processor::builtin::wpm::WpmProcessor;
 use rmk::storage::async_flash_wrapper;
-use rmk::{HostResources, KeymapData, initialize_keymap_and_storage, run_all, run_rmk};
+use rmk::{HostResources, KeymapData, initialize_keymap_and_storage, run_all};
 
 use crate::keymap::*;
 use crate::vial::{VIAL_KEYBOARD_DEF, VIAL_KEYBOARD_ID};
@@ -89,11 +89,11 @@ async fn main(_s: Spawner) {
     let mut matrix = Matrix::<_, _, _, ROW, COL, true>::new(row_pins, col_pins, debouncer);
     // let mut matrix = rmk::matrix::TestMatrix::<ROW, COL>::new();
     let mut keyboard = Keyboard::new(&keymap); // Initialize the light controller
+    let host_ctx = rmk::host::KeyboardContext::new(&keymap);
+    let mut host_service = HostService::new(&host_ctx, &rmk_config);
 
-    join3(
-        run_all!(matrix),
-        keyboard.run(), // Keyboard is special
-        run_rmk(&keymap, &stack, &mut storage, rmk_config),
-    )
-    .await;
+    let mut ble_transport = BleTransport::new(&stack, rmk_config).await;
+    let mut wpm_processor = WpmProcessor::new();
+
+    run_all!(matrix, storage, ble_transport, wpm_processor, keyboard, host_service).await;
 }

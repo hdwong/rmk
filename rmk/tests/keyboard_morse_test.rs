@@ -1,9 +1,9 @@
 pub mod common;
 
 use embassy_time::Duration;
-use rmk::combo::{Combo, ComboConfig};
 use rmk::config::{BehaviorConfig, CombosConfig};
 use rmk::k;
+use rmk::keyboard::combo::{Combo, ComboConfig};
 use rmk::types::action::{Action, KeyAction};
 use rmk::types::keycode::{HidKeyCode, KeyCode};
 use rmk::types::modifier::ModifierCombination;
@@ -733,6 +733,7 @@ fn test_morse_with_combo() {
                         ))), None, None, None, None, None, None, None
                     ],
                     timeout: Duration::from_millis(50),
+                    prior_idle_time: None,
                 },
                 ..BehaviorConfig::default()
             }),
@@ -765,6 +766,7 @@ fn test_morse_with_combo_2() {
                         ))), None, None, None, None, None, None, None
                     ],
                     timeout: Duration::from_millis(50),
+                    prior_idle_time: None,
                 },
                 ..BehaviorConfig::default()
             }),

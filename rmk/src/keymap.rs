@@ -1,10 +1,9 @@
 use core::cell::RefCell;
 
-use embassy_time::{Duration, Instant};
-use heapless::LinearMap;
+use embassy_time::Duration;
 use rmk_types::action::{EncoderAction, KeyAction};
 use rmk_types::fork::Fork;
-use rmk_types::morse::MorseProfile;
+use rmk_types::morse::{Morse, MorseProfile};
 #[cfg(all(feature = "storage", feature = "host"))]
 use {
     crate::{boot::reboot_keyboard, storage::Storage},
@@ -12,14 +11,13 @@ use {
 };
 
 use crate::MACRO_SPACE_SIZE;
-use crate::combo::Combo;
 use crate::config::{BehaviorConfig, Hand, MouseKeyConfig, OneShotModifiersConfig, PositionalConfig};
 use crate::event::{KeyboardEvent, KeyboardEventPos, LayerChangeEvent, publish_event};
 use crate::input_device::rotary_encoder::Direction;
+use crate::keyboard::combo::Combo;
 use crate::keyboard_macros::MacroOperation;
 #[cfg(feature = "host_security")]
 use crate::matrix::MatrixState;
-use crate::morse::Morse;
 
 pub(crate) const HOLD_BUFFER_SIZE: usize = 16;
 
@@ -106,8 +104,6 @@ struct KeyMapInner<'a> {
     hand: &'a [Hand],
     /// Mouse button state
     mouse_buttons: u8,
-    /// Timer for held keys (bounded by hold buffer size)
-    timer: LinearMap<KeyboardEventPos, Instant, HOLD_BUFFER_SIZE>,
     /// Matrix state for vial lock
     #[cfg(feature = "host_security")]
     matrix_state: MatrixState,
@@ -367,7 +363,6 @@ impl<'a> KeyMap<'a> {
                 behavior,
                 hand,
                 mouse_buttons: 0,
-                timer: LinearMap::new(),
                 #[cfg(feature = "host_security")]
                 matrix_state: MatrixState::new(ROW, COL),
             }),
@@ -436,6 +431,23 @@ impl<'a> KeyMap<'a> {
         self.inner.borrow().get_action_at(pos, layer)
     }
 
+    /// Read the action currently bound to a `(layer, row, col)` position.
+    ///
+    /// This is the post-storage, post-Vial state — i.e. what the keyboard will
+    /// actually emit when that key fires, not the compile-time default. Useful
+    /// for accessory displays / status surfaces that want to mirror the live
+    /// keymap.
+    pub fn action_at_pos(&self, layer: usize, row: u8, col: u8) -> KeyAction {
+        self.inner
+            .borrow()
+            .get_action_at(KeyboardEventPos::key_pos(col, row), layer)
+    }
+
+    /// Active layer index (after layer-toggle/momentary updates).
+    pub fn active_layer(&self) -> u8 {
+        self.inner.borrow().get_activated_layer()
+    }
+
     pub(crate) fn set_action_at(&self, pos: KeyboardEventPos, layer: usize, action: KeyAction) {
         self.inner.borrow_mut().set_action_at(pos, layer, action);
     }
@@ -490,6 +502,10 @@ impl<'a> KeyMap<'a> {
 
     pub(crate) fn combo_timeout(&self) -> Duration {
         self.inner.borrow().behavior.combo.timeout
+    }
+
+    pub(crate) fn combo_prior_idle_time(&self) -> Option<Duration> {
+        self.inner.borrow().behavior.combo.prior_idle_time
     }
 
     pub(crate) fn one_shot_timeout(&self) -> Duration {
@@ -694,26 +710,6 @@ impl<'a> KeyMap<'a> {
         self.inner.borrow().behavior.keyboard_macros.macro_sequences
     }
 
-    // ── Timers (moved from Keyboard) ──
-
-    pub(crate) fn set_timer(&self, pos: KeyboardEventPos, value: Option<Instant>) {
-        let mut inner = self.inner.borrow_mut();
-        match value {
-            Some(instant) => {
-                if inner.timer.insert(pos, instant).is_err() {
-                    warn!("Timer buffer full, dropping timer for {:?}", pos);
-                }
-            }
-            None => {
-                inner.timer.remove(&pos);
-            }
-        }
-    }
-
-    pub(crate) fn get_timer(&self, pos: KeyboardEventPos) -> Option<Instant> {
-        self.inner.borrow().timer.get(&pos).copied()
-    }
-
     // ── Matrix state (host_security) ──
 
     #[cfg(feature = "host_security")]
@@ -737,7 +733,7 @@ mod test {
     use rmk_types::fork::{Fork, StateBits};
     use rmk_types::modifier::ModifierCombination;
 
-    use crate::combo::{Combo, ComboConfig};
+    use crate::keyboard::combo::{Combo, ComboConfig};
     use crate::keymap::fill_vec;
     use crate::{COMBO_MAX_NUM, FORK_MAX_NUM, k};
 

@@ -1,17 +1,15 @@
 use bt_hci::cmd::le::LeSetPhy;
 use bt_hci::controller::ControllerCmdAsync;
 use embassy_futures::join::join;
-use embassy_futures::select::select;
 use embassy_time::{Duration, Timer, with_timeout};
 use trouble_host::prelude::*;
-#[cfg(feature = "storage")]
-use {super::PeerAddress, crate::storage::Storage, embedded_storage_async::nor_flash::NorFlash};
 
-use crate::CONNECTION_STATE;
+#[cfg(feature = "storage")]
+use super::PeerAddress;
 use crate::event::{CentralConnectedEvent, KeyboardEvent, SubscribableEvent, publish_event};
 use crate::split::driver::{SplitDriverError, SplitReader, SplitWriter};
 use crate::split::peripheral::SplitPeripheral;
-use crate::split::{SPLIT_MESSAGE_MAX_SIZE, SplitMessage};
+use crate::split::{CENTRAL_HOST_CONNECTED, SPLIT_MESSAGE_MAX_SIZE, SplitMessage};
 
 /// Gatt service used in split peripheral to send split message to central
 #[gatt_service(uuid = "4dd5fbaa-18e5-4b07-bf0a-353698659946")]
@@ -52,7 +50,7 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitReader for BleSplitPeripheralDrive
             match self.conn.next().await {
                 GattConnectionEvent::Disconnected { reason } => {
                     error!("Disconnected from central: {:?}", reason);
-                    CONNECTION_STATE.store(false, core::sync::atomic::Ordering::Release);
+                    CENTRAL_HOST_CONNECTED.store(false, core::sync::atomic::Ordering::Release);
                     return Err(SplitDriverError::Disconnected);
                 }
                 GattConnectionEvent::Gatt { event: gatt_event } => {
@@ -127,18 +125,9 @@ impl<'stack, 'server, 'c, P: PacketPool> SplitWriter for BleSplitPeripheralDrive
 /// * `id` - The id of the peripheral
 /// * `central_addr` - The address of the central
 /// * `stack` - The stack to use
-pub async fn initialize_nrf_ble_split_peripheral_and_run<
-    'stack,
-    C: Controller + ControllerCmdAsync<LeSetPhy>,
-    F: NorFlash,
-    const ROW: usize,
-    const COL: usize,
-    const NUM_LAYER: usize,
-    const NUM_ENCODER: usize,
->(
+pub async fn initialize_nrf_ble_split_peripheral_and_run<'stack, C: Controller + ControllerCmdAsync<LeSetPhy>>(
     id: usize,
     stack: &'stack Stack<'stack, C, DefaultPacketPool>,
-    storage: &mut Storage<F, ROW, COL, NUM_LAYER, NUM_ENCODER>,
 ) {
     publish_event(CentralConnectedEvent { connected: false });
 
@@ -147,45 +136,35 @@ pub async fn initialize_nrf_ble_split_peripheral_and_run<
     } = stack.build();
 
     // First, read central address from storage
-    let mut central_saved = false;
-    let mut central_addr = if let Ok(Some(central_addr)) = storage.read_peer_address(0).await {
-        if central_addr.is_valid {
-            central_saved = true;
-            Some(central_addr.address)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let mut central_addr = crate::storage::read_peer_address(0)
+        .await
+        .filter(|a| a.is_valid)
+        .map(|a| a.address);
 
     let peri_task = async {
         let server = BleSplitPeripheralServer::new_default("rmk").unwrap();
         loop {
-            CONNECTION_STATE.store(false, core::sync::atomic::Ordering::Release);
+            CENTRAL_HOST_CONNECTED.store(false, core::sync::atomic::Ordering::Release);
             publish_event(CentralConnectedEvent { connected: false });
             match split_peripheral_advertise(id, central_addr, &mut peripheral, &server).await {
                 Ok(conn) => {
                     info!("Connected to the central");
                     publish_event(CentralConnectedEvent { connected: true });
                     let mut peripheral = SplitPeripheral::new(BleSplitPeripheralDriver::new(&server, &conn));
-                    // Save central address to storage if the central address is not saved
-                    if !central_saved || conn.raw().peer_address().into_inner() != central_addr.unwrap_or_default() {
+                    let new_addr = conn.raw().peer_address().into_inner();
+                    if central_addr != Some(new_addr) {
                         info!("Saving central address to storage");
-                        if let Ok(()) = storage
-                            .write_peer_address(PeerAddress {
-                                peer_id: 0,
-                                is_valid: true,
-                                address: conn.raw().peer_address().into_inner(),
-                            })
-                            .await
+                        if crate::storage::write_peer_address(PeerAddress {
+                            peer_id: 0,
+                            is_valid: true,
+                            address: new_addr,
+                        })
+                        .await
                         {
-                            central_saved = true;
-                            central_addr = Some(conn.raw().peer_address().into_inner());
+                            central_addr = Some(new_addr);
                         }
                     }
-                    // Start run peripheral service
-                    select(storage.run(), peripheral.run()).await;
+                    peripheral.run().await;
                     info!("Disconnected from the central");
                 }
                 Err(BleHostError::BleHost(Error::Timeout)) => {
