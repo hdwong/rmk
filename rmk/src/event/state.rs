@@ -58,3 +58,17 @@ impl SleepStateEvent {
 }
 
 impl_payload_wrapper!(SleepStateEvent, bool);
+
+/// RGB directive mirrored from central to peripheral.
+///
+/// `Color` renders a uniform color (Solid / Rainbow). `brightness == 0` means dark.
+/// `Reactive` switches the peripheral to per-key fade mode; the peripheral
+/// runs the animation locally using the carried `hue` for the splash color
+/// and `speed` (one of -2..=+2, ±25% per step) to scale fade duration.
+#[event(channel_size = crate::RGB_STATE_EVENT_CHANNEL_SIZE, pubs = crate::RGB_STATE_EVENT_PUB_SIZE, subs = crate::RGB_STATE_EVENT_SUB_SIZE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum RgbStateEvent {
+    Color { hue: u8, brightness: u8 },
+    Reactive { hue: u8, brightness: u8, speed: i8 },
+}

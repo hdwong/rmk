@@ -30,6 +30,13 @@ pub(crate) enum SplitMessage {
     Pointing(PointingEvent),
     /// Led state, on/off, from central to peripheral
     LedState(bool),
+    /// RGB effective color (hue, brightness), central to peripheral.
+    /// `brightness == 0` means the strip should be dark.
+    RgbColor(u8, u8),
+    /// Switch peripheral to per-key reactive fade: `(hue, brightness, speed)`
+    /// where speed is the i8 level in -2..=+2 (-50% .. +50%, step 25%).
+    /// `brightness == 0` is equivalent to RgbColor(0, 0): strip dark.
+    RgbReactive(u8, u8, i8),
     /// The central connection state, true if central has been connected to host.
     /// This message is sync from central to peripheral
     ConnectionState(bool),
