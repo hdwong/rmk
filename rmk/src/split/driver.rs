@@ -88,6 +88,7 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
         let mut last_sync_time = Instant::now();
         let mut indicator_sub = crate::event::LedIndicatorEvent::subscriber();
         let mut layer_sub = crate::event::LayerChangeEvent::subscriber();
+        let mut rgb_sub = crate::event::RgbStateEvent::subscriber();
         #[cfg(feature = "_ble")]
         let mut clear_peer_sub = crate::event::ClearPeerEvent::subscriber();
         #[cfg(feature = "display")]
@@ -106,6 +107,10 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
                 crate::select_biased_with_feature! {
                     e = indicator_sub.next_event().fuse() => SplitMessage::KeyboardIndicator(e.0.into_bits()),
                     e = layer_sub.next_event().fuse() => SplitMessage::Layer(e.0),
+                    e = rgb_sub.next_event().fuse() => match e {
+                        crate::event::RgbStateEvent::Color { hue, brightness } => SplitMessage::RgbColor(hue, brightness),
+                        crate::event::RgbStateEvent::Reactive { hue, brightness, speed } => SplitMessage::RgbReactive(hue, brightness, speed),
+                    },
                     with_feature("_ble"): _ = clear_peer_sub.next_event().fuse() => {
                         #[cfg(feature = "storage")]
                         {

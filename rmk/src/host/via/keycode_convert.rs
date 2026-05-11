@@ -99,8 +99,12 @@ pub(crate) fn to_via_keycode(key_action: KeyAction) -> u16 {
                 LightAction::RgbTog => 0x7820,
                 LightAction::RgbModeForward => 0x7821,
                 LightAction::RgbModeReverse => 0x7822,
+                LightAction::RgbHui => 0x7823,
+                LightAction::RgbHud => 0x7824,
                 LightAction::RgbVai => 0x7827,
                 LightAction::RgbVad => 0x7828,
+                LightAction::RgbSpi => 0x7829,
+                LightAction::RgbSpd => 0x782A,
                 _ => {
                     warn!("LightAction: {:?} vial is not supported yet", c);
                     0
@@ -231,8 +235,12 @@ pub(crate) fn from_via_keycode(via_keycode: u16) -> KeyAction {
                 0x7820 => KeyAction::Single(Action::Light(LightAction::RgbTog)),
                 0x7821 => KeyAction::Single(Action::Light(LightAction::RgbModeForward)),
                 0x7822 => KeyAction::Single(Action::Light(LightAction::RgbModeReverse)),
+                0x7823 => KeyAction::Single(Action::Light(LightAction::RgbHui)),
+                0x7824 => KeyAction::Single(Action::Light(LightAction::RgbHud)),
                 0x7827 => KeyAction::Single(Action::Light(LightAction::RgbVai)),
                 0x7828 => KeyAction::Single(Action::Light(LightAction::RgbVad)),
+                0x7829 => KeyAction::Single(Action::Light(LightAction::RgbSpi)),
+                0x782A => KeyAction::Single(Action::Light(LightAction::RgbSpd)),
                 _ => {
                     // TODO: backlight and rgb configuration
                     warn!("Backlight and RGB configuration key not supported: {:#X}", via_keycode);
