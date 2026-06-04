@@ -395,6 +395,8 @@ define_event_config!(
     clear_peer,
     // Action events
     action,
+    // RGB state events
+    rgb_state,
 );
 
 /// Configurations for keyboard layout

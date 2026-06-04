@@ -80,6 +80,7 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
         // Subscribe before the initial send so any change racing past the
         // snapshot is still delivered to us.
         let mut connection_sub = crate::event::ConnectionStatusChangeEvent::subscriber();
+        let mut rgb_sub = crate::event::RgbStateEvent::subscriber();
         #[cfg(feature = "_ble")]
         let mut clear_peer_sub = crate::event::ClearPeerEvent::subscriber();
 
@@ -109,6 +110,7 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
                     e = indicator_sub.next_event().fuse() => SplitMessage::KeyboardIndicator(e.0.into_bits()),
                     e = layer_sub.next_event().fuse() => SplitMessage::Layer(e.0),
                     e = connection_sub.next_event().fuse() => SplitMessage::ConnectionStatus(e.0),
+                    e = rgb_sub.next_event().fuse() => SplitMessage::RgbState(e.0),
                     with_feature("_ble"): _ = clear_peer_sub.next_event().fuse() => {
                         #[cfg(feature = "storage")]
                         {

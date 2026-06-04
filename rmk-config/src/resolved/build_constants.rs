@@ -111,6 +111,7 @@ impl crate::KeyboardTomlConfig {
             peripheral_battery,
             clear_peer,
             action,
+            rgb_state,
         );
 
         // Auto-bump subscriber counts based on enabled feature flags.
