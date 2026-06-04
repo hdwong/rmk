@@ -58,3 +58,14 @@ impl SleepStateEvent {
 }
 
 impl_payload_wrapper!(SleepStateEvent, bool);
+
+/// RGB directive mirrored from central to peripheral. Wraps the same
+/// [`RgbState`](crate::storage::RgbState) used for persistence and the
+/// split-link wire format — single source of truth for "what the strip
+/// should look like".
+#[event(channel_size = crate::RGB_STATE_EVENT_CHANNEL_SIZE, pubs = crate::RGB_STATE_EVENT_PUB_SIZE, subs = crate::RGB_STATE_EVENT_SUB_SIZE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RgbStateEvent(pub crate::storage::RgbState);
+
+impl_payload_wrapper!(RgbStateEvent, crate::storage::RgbState);

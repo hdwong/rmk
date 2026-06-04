@@ -117,6 +117,11 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                                 rmk_types::led_indicator::LedIndicator::from_bits(indicator),
                             ));
                         }
+                        SplitMessage::RgbState(state) => {
+                            // Mirror full RGB state from central — single
+                            // directive covering enable / mode / HSV / speed.
+                            publish_event(crate::event::RgbStateEvent(state));
+                        }
                         SplitMessage::Layer(layer) => {
                             // Publish Layer event
                             publish_event(LayerChangeEvent::new(layer));

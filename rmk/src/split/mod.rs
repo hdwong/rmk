@@ -34,6 +34,10 @@ pub(crate) enum SplitMessage {
     /// `ConnectionStatus` snapshot of the central.
     /// Synced central → peripheral on every change.
     ConnectionStatus(ConnectionStatus),
+    /// Full RGB state directive (enable + mode + HSV + speed), central to
+    /// peripheral. The peripheral inspects `mode` to decide how to render
+    /// and uses `speed` to scale any local animation (Rainbow / Reactive).
+    RgbState(crate::storage::RgbState),
     /// BLE Address, used in syncing address between central and peripheral
     Address([u8; 6]),
     /// Clear the saved peer info
