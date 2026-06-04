@@ -128,13 +128,10 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                                 rmk_types::led_indicator::LedIndicator::from_bits(indicator),
                             ));
                         }
-                        SplitMessage::RgbColor(hue, brightness) => {
-                            // Mirror RGB color directive from central
-                            publish_event(crate::event::RgbStateEvent::Color { hue, brightness });
-                        }
-                        SplitMessage::RgbReactive(hue, brightness, speed) => {
-                            // Switch peripheral to per-key reactive fade mode
-                            publish_event(crate::event::RgbStateEvent::Reactive { hue, brightness, speed });
+                        SplitMessage::RgbState(state) => {
+                            // Mirror full RGB state from central — single
+                            // directive covering enable / mode / HSV / speed.
+                            publish_event(crate::event::RgbStateEvent(state));
                         }
                         SplitMessage::Layer(layer) => {
                             // Publish Layer event

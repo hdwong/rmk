@@ -1,6 +1,7 @@
 use core::fmt::Debug;
 
 use embassy_embedded_hal::adapter::BlockingAsync;
+use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 use embedded_storage::nor_flash::NorFlash;
@@ -31,6 +32,91 @@ use crate::{BUILD_HASH, config};
 /// Signal to synchronize the flash operation status, usually used outside of the flash task.
 /// True if the flash operation is finished correctly, false if the flash operation is finished with error.
 pub(crate) static FLASH_OPERATION_FINISHED: Signal<crate::RawMutex, bool> = Signal::new();
+
+// Request/response over `FLASH_CHANNEL`. One `Signal` per read variant; the
+// storage task fires the matching one once it has the result.
+#[cfg(feature = "_ble")]
+static BOND_INFO_RESPONSE: Signal<crate::RawMutex, Option<ProfileInfo>> = Signal::new();
+#[cfg(all(feature = "_ble", feature = "split"))]
+static PEER_ADDRESS_RESPONSE: Signal<crate::RawMutex, Option<PeerAddress>> = Signal::new();
+#[cfg(feature = "_ble")]
+static CONNECTION_TYPE_RESPONSE: Signal<crate::RawMutex, Option<ConnectionType>> = Signal::new();
+#[cfg(feature = "_ble")]
+static ACTIVE_BLE_PROFILE_RESPONSE: Signal<crate::RawMutex, Option<u8>> = Signal::new();
+
+#[cfg(feature = "_ble")]
+async fn request_read<T: Send>(msg: FlashOperationMessage, response: &Signal<crate::RawMutex, T>) -> T {
+    response.reset();
+    FLASH_CHANNEL.send(msg).await;
+    response.wait().await
+}
+
+#[cfg(feature = "_ble")]
+pub(crate) async fn read_bond_info(slot_num: u8) -> Option<ProfileInfo> {
+    request_read(FlashOperationMessage::ReadBleBondInfo(slot_num), &BOND_INFO_RESPONSE).await
+}
+
+#[cfg(all(feature = "_ble", feature = "split"))]
+pub(crate) async fn read_peer_address(peer_id: u8) -> Option<PeerAddress> {
+    request_read(FlashOperationMessage::ReadPeerAddress(peer_id), &PEER_ADDRESS_RESPONSE).await
+}
+
+#[cfg(feature = "_ble")]
+pub(crate) async fn read_connection_type() -> Option<ConnectionType> {
+    request_read(FlashOperationMessage::ReadConnectionType, &CONNECTION_TYPE_RESPONSE).await
+}
+
+#[cfg(feature = "_ble")]
+pub(crate) async fn read_active_ble_profile() -> Option<u8> {
+    request_read(
+        FlashOperationMessage::ReadActiveBleProfile,
+        &ACTIVE_BLE_PROFILE_RESPONSE,
+    )
+    .await
+}
+
+/// Send a peer address to be persisted; wait for the storage task to finish.
+/// Returns `true` if the write completed successfully.
+#[cfg(all(feature = "_ble", feature = "split"))]
+pub(crate) async fn write_peer_address(addr: PeerAddress) -> bool {
+    FLASH_OPERATION_FINISHED.reset();
+    FLASH_CHANNEL.send(FlashOperationMessage::PeerAddress(addr)).await;
+    FLASH_OPERATION_FINISHED.wait().await
+}
+
+/// Persisted RGB lighting state. Single source of truth shared by the event
+/// channel, the split-link wire format, and flash persistence. Written by
+/// user code via [`save_rgb_state`] and loaded once at boot into
+/// [`LOADED_RGB_STATE`] for the user processor to consume.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, MaxSize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RgbState {
+    /// Strip enable.
+    pub enable: bool,
+    /// Effect index — user-defined encoding (e.g. 0 = Solid, 1 = Rainbow, 2 = Reactive).
+    pub mode: u8,
+    /// HSV hue.
+    pub hue: u8,
+    /// HSV saturation (255 = vivid, 0 = white).
+    pub sat: u8,
+    /// HSV value (brightness).
+    pub val: u8,
+    /// Speed level, typically in [-2, +2].
+    pub speed: i8,
+}
+
+/// Saved RGB state read from flash at boot. `None` if nothing was saved yet
+/// (first boot, after a storage clear, or a different build hash). User code
+/// can take this once on first poll and apply it to the runtime processor.
+pub static LOADED_RGB_STATE: Mutex<crate::RawMutex, Option<RgbState>> = Mutex::new(None);
+
+/// Queue a save of the given RGB state to flash. Non-blocking; if the flash
+/// channel is full the request is dropped (the next state change will retry).
+pub fn save_rgb_state(state: RgbState) {
+    FLASH_CHANNEL
+        .try_send(FlashOperationMessage::RgbState(state))
+        .ok();
+}
 
 // Message send from other tasks, which will do saving or clearing operation
 #[allow(clippy::large_enum_variant)]
@@ -100,6 +186,20 @@ pub(crate) enum FlashOperationMessage {
     PriorIdleTime(u16),
     // Default morse profile containing all morse/tap-hold settings (mode, timeouts, unilateral_tap)
     MorseDefaultProfile(MorseProfile),
+    #[cfg(feature = "_ble")]
+    // Read bond info for the given slot; storage task replies via `BOND_INFO_RESPONSE`.
+    ReadBleBondInfo(u8),
+    #[cfg(all(feature = "_ble", feature = "split"))]
+    // Read peer address for the given peer id; storage task replies via `PEER_ADDRESS_RESPONSE`.
+    ReadPeerAddress(u8),
+    #[cfg(feature = "_ble")]
+    // Read the persisted `ConnectionType`; storage task replies via `CONNECTION_TYPE_RESPONSE`.
+    ReadConnectionType,
+    #[cfg(feature = "_ble")]
+    // Read the persisted active BLE profile number; storage task replies via `ACTIVE_BLE_PROFILE_RESPONSE`.
+    ReadActiveBleProfile,
+    // User-controlled RGB lighting state
+    RgbState(RgbState),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -134,6 +234,7 @@ pub(crate) enum StorageKey {
     ActiveBleProfile,
     #[cfg(feature = "_ble")]
     BondInfo(u8),
+    RgbState,
 }
 
 impl StorageKey {
@@ -215,6 +316,7 @@ pub(crate) enum StorageData {
     BondInfo(ProfileInfo),
     #[cfg(feature = "_ble")]
     ActiveBleProfile(u8),
+    RgbState(RgbState),
 }
 
 impl<'a> PostcardValue<'a> for StorageData {}
@@ -423,6 +525,14 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 let _ = storage.reset_layout_only(keymap, &encoder_map, behavior_config).await;
             }
         }
+
+        // Load persisted user-facing RGB config (if any) so the lighting
+        // processor can pick it up on its first tick.
+        let saved_rgb = match storage.fetch_data(StorageKey::RgbState).await {
+            Some(StorageData::RgbState(c)) => Some(c),
+            _ => None,
+        };
+        *LOADED_RGB_STATE.lock().await = saved_rgb;
 
         storage
     }
@@ -733,6 +843,63 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         self.store_data(key, &item)
             .await
             .map_err(|e| print_storage_error::<F>(e))
+                    info!("Clearing bond info slot_num: {}", slot_num);
+                    // Remove item in `sequential-storage` is quite expensive, so just override the item with `removed = true`
+                    let empty = ProfileInfo {
+                        removed: true,
+                        slot_num,
+                        info: BondInformation::new(
+                            Identity {
+                                bd_addr: BdAddr::new([0; 6]),
+                                irk: None,
+                            },
+                            LongTermKey::from_le_bytes([0; 16]),
+                            SecurityLevel::NoEncryption,
+                            false,
+                        ),
+                        cccd_table: CccdTable::new([(0u16, CCCD::default()); CCCD_TABLE_SIZE]),
+                    };
+                    self.store_data(StorageKey::bond_info(slot_num), &StorageData::BondInfo(empty))
+                        .await
+                }
+                #[cfg(feature = "_ble")]
+                FlashOperationMessage::ProfileInfo(b) => {
+                    debug!("Saving profile info: {:?}", b);
+                    self.store_data(StorageKey::bond_info(b.slot_num), &StorageData::BondInfo(b))
+                        .await
+                }
+                FlashOperationMessage::ComboTimeout(combo_timeout) => {
+                    update_storage_field!(&mut self.flash, &mut self.buffer, BehaviorConfig, combo_timeout)
+                }
+                FlashOperationMessage::OneShotTimeout(one_shot_timeout) => {
+                    update_storage_field!(&mut self.flash, &mut self.buffer, BehaviorConfig, one_shot_timeout)
+                }
+                FlashOperationMessage::TapInterval(tap_interval) => {
+                    update_storage_field!(&mut self.flash, &mut self.buffer, BehaviorConfig, tap_interval)
+                }
+                FlashOperationMessage::TapCapslockInterval(tap_capslock_interval) => {
+                    update_storage_field!(&mut self.flash, &mut self.buffer, BehaviorConfig, tap_capslock_interval)
+                }
+                FlashOperationMessage::PriorIdleTime(prior_idle_time) => {
+                    update_storage_field!(&mut self.flash, &mut self.buffer, BehaviorConfig, prior_idle_time)
+                }
+                FlashOperationMessage::MorseDefaultProfile(morse_default_profile) => {
+                    update_storage_field!(&mut self.flash, &mut self.buffer, BehaviorConfig, morse_default_profile)
+                }
+                FlashOperationMessage::RgbState(state) => {
+                    self.store_data(StorageKey::RgbState, &StorageData::RgbState(state))
+                        .await
+                }
+            };
+
+            match write_result {
+                Ok(()) => FLASH_OPERATION_FINISHED.signal(true),
+                Err(e) => {
+                    print_storage_error::<F>(e);
+                    FLASH_OPERATION_FINISHED.signal(false);
+                }
+            }
+        }
     }
 }
 
