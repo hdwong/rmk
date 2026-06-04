@@ -11,7 +11,7 @@ pub(crate) struct VialLock<'a> {
 impl<'a> VialLock<'a> {
     pub fn new(unlock_keys: &'a [(u8, u8)], keymap: &'a KeyMap<'a>) -> Self {
         Self {
-            unlocked: false,
+            unlocked: true,
             unlocking: false,
             last_poll: embassy_time::Instant::MIN,
             unlock_keys,
