@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 
-#[cfg(all(feature = "split", feature = "_ble"))]
+#[cfg(feature = "_ble")]
 use embassy_futures::select::{Either, select};
 use embassy_futures::yield_now;
 #[cfg(feature = "_ble")]
@@ -1608,8 +1608,45 @@ impl<'a> Keyboard<'a> {
             use crate::ble::profile::BleProfileAction;
             use crate::channel::BLE_PROFILE_CHANNEL;
             if event.pressed {
+                // User0~7: SwitchProfile, User8: NextProfile, User9: PreviousProfile
+                // All require holding 1s to trigger
+                if id <= NUM_BLE_PROFILE as u8 + 1 {
+                    if event.pressed {
+                        let action = if id < NUM_BLE_PROFILE as u8 {
+                            BleProfileAction::Switch(id)
+                        } else if id == NUM_BLE_PROFILE as u8 {
+                            BleProfileAction::Next
+                        } else {
+                            BleProfileAction::Previous
+                        };
+                        // Wait for 1s, if the key is still pressed, send the profile action
+                        // If there's any other key event received during this period, skip
+                        match select(
+                            embassy_time::Timer::after_millis(1000),
+                            self.keyboard_event_subscriber.next_message_pure(),
+                        )
+                        .await
+                        {
+                            Either::First(_) => {
+                                if id < NUM_BLE_PROFILE as u8 {
+                                    info!("Switch to profile: {}", id);
+                                } else if id == NUM_BLE_PROFILE as u8 {
+                                    info!("Next profile action triggered");
+                                } else if id == NUM_BLE_PROFILE as u8 + 1 {
+                                    info!("Previous profile action triggered");
+                                }
+                                BLE_PROFILE_CHANNEL.send(action).await;
+                            }
+                            Either::Second(e) => {
+                                if self.unprocessed_events.push(e).is_err() {
+                                    warn!("Unprocessed event queue is full, dropping event");
+                                }
+                            }
+                        }
+                    }
+                }
                 // Clear Peer is processed when pressed
-                if id == NUM_BLE_PROFILE as u8 + 4 {
+                else if id == NUM_BLE_PROFILE as u8 + 4 {
                     #[cfg(feature = "split")]
                     if event.pressed {
                         // Wait for 5s, if the key is still pressed, clear split peer info
@@ -1639,16 +1676,7 @@ impl<'a> Keyboard<'a> {
                 // Other user keys are processed when released.
                 // Slots 0..NUM_BLE_PROFILE select a profile directly; the next four are
                 // fixed actions stacked on top.
-                if id < NUM_BLE_PROFILE as u8 {
-                    info!("Switch to profile: {}", id);
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Switch(id)).await;
-                } else if id == NUM_BLE_PROFILE as u8 {
-                    // Next profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Next).await;
-                } else if id == NUM_BLE_PROFILE as u8 + 1 {
-                    // Previous profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Previous).await;
-                } else if id == NUM_BLE_PROFILE as u8 + 2 {
+                if id == NUM_BLE_PROFILE as u8 + 2 {
                     // Clear bond on current profile
                     BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearBond).await;
                 } else if id == NUM_BLE_PROFILE as u8 + 3 {
