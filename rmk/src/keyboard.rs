@@ -1635,6 +1635,32 @@ impl<'a> Keyboard<'a> {
                         }
                     }
                 }
+                // User8: Toggle keyboard layout between Windows (default layer 0) and macOS (default layer 2).
+                else if id == NUM_BLE_PROFILE as u8 + 5 {
+                    if event.pressed {
+                        // Wait for 3s, if the key is still pressed, toggle the keyboard layout
+                        match select(
+                            embassy_time::Timer::after_millis(3000),
+                            self.keyboard_event_subscriber.next_message_pure(),
+                        )
+                        .await
+                        {
+                            Either::First(_) => {
+                                let current = self.keymap.get_default_layer();
+                                let next = if current == 0 { 2 } else { 0 };
+                                self.keymap.set_default_layer(next);
+                                info!("Layout toggled: default layer {} -> {}", current, next);
+                                // Notify subscribers (e.g. central LED / flash persistence) of the new default layout.
+                                publish_event(crate::event::DefaultLayoutChangeEvent::new(next));
+                            }
+                            Either::Second(e) => {
+                                if self.unprocessed_events.push(e).is_err() {
+                                    warn!("Unprocessed event queue is full, dropping event");
+                                }
+                            }
+                        }
+                    }
+                }
             } else {
                 // Other user keys are processed when released.
                 // Slots 0..NUM_BLE_PROFILE select a profile directly; the next four are
