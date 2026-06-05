@@ -1652,6 +1652,12 @@ impl<'a> Keyboard<'a> {
                                 info!("Layout toggled: default layer {} -> {}", current, next);
                                 // Notify subscribers (e.g. central LED / flash persistence) of the new default layout.
                                 publish_event(crate::event::DefaultLayoutChangeEvent::new(next));
+                                // Persist the new default layer so it survives a reboot.
+                                // Restored at boot in `KeyMap::new_from_storage`.
+                                #[cfg(feature = "storage")]
+                                crate::channel::FLASH_CHANNEL
+                                    .try_send(crate::storage::FlashOperationMessage::DefaultLayer(next))
+                                    .ok();
                             }
                             Either::Second(e) => {
                                 if self.unprocessed_events.push(e).is_err() {
