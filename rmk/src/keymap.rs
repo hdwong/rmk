@@ -397,8 +397,9 @@ impl<'a> KeyMap<'a> {
         fill_vec(&mut behavior.morse.morses);
 
         // Read from storage BEFORE flattening (storage expects typed arrays)
-        if let Some(storage) = storage
-            && {
+        let mut stored_default_layer = None;
+        if let Some(storage) = storage {
+            if {
                 Ok(())
                     .and(storage.read_keymap(data).await)
                     .and(storage.read_behavior_config(behavior).await)
@@ -412,13 +413,24 @@ impl<'a> KeyMap<'a> {
                     .and(storage.read_morses(&mut behavior.morse.morses).await)
             }
             .is_err()
-        {
-            error!("Failed to read from storage, clearing...");
-            storage.flash.erase_all().await.ok();
-            reboot_keyboard();
+            {
+                error!("Failed to read from storage, clearing...");
+                storage.flash.erase_all().await.ok();
+                reboot_keyboard();
+            }
+            // Restore the persisted default layer (saved on the User8 layout toggle).
+            stored_default_layer = storage.read_default_layer().await;
         }
 
-        Self::build(data, behavior, positional_config)
+        let keymap = Self::build(data, behavior, positional_config);
+        // Apply the restored default layer, ignoring out-of-range values left by
+        // stale storage from a different firmware layout.
+        if let Some(layer) = stored_default_layer
+            && (layer as usize) < NUM_LAYER
+        {
+            keymap.set_default_layer(layer);
+        }
+        keymap
     }
 
     // ── Action resolution ──

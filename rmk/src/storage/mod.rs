@@ -566,6 +566,15 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
         Ok(())
     }
 
+    /// Read the persisted default layer from `LayoutConfig`, if one was saved.
+    /// Returns `None` when storage has no layout config yet (first boot).
+    pub(crate) async fn read_default_layer(&mut self) -> Option<u8> {
+        match self.fetch_data(StorageKey::LayoutConfig).await {
+            Some(StorageData::LayoutConfig(c)) => Some(c.default_layer),
+            _ => None,
+        }
+    }
+
     async fn initialize_storage_with_config(
         &mut self,
         #[cfg(feature = "host")] keymap: &[[[KeyAction; COL]; ROW]; NUM_LAYER],
