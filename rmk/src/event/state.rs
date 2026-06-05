@@ -17,6 +17,25 @@ impl LayerChangeEvent {
 
 impl_payload_wrapper!(LayerChangeEvent, u8);
 
+/// Default layout (base/default layer) changed event.
+///
+/// Published when the default layer is changed at runtime (e.g. by the
+/// Windows/macOS layout toggle). The payload is the new default layer index.
+/// Unlike [`LayerChangeEvent`], which fires for any momentary layer change,
+/// this fires only when the persistent default layer is updated.
+#[event(channel_size = 1, pubs = 1, subs = 1)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DefaultLayoutChangeEvent(pub u8);
+
+impl DefaultLayoutChangeEvent {
+    pub fn new(layer: u8) -> Self {
+        Self(layer)
+    }
+}
+
+impl_payload_wrapper!(DefaultLayoutChangeEvent, u8);
+
 /// WPM updated event
 #[event(channel_size = crate::WPM_UPDATE_EVENT_CHANNEL_SIZE, pubs = crate::WPM_UPDATE_EVENT_PUB_SIZE, subs = crate::WPM_UPDATE_EVENT_SUB_SIZE)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
