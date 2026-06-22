@@ -53,7 +53,6 @@ The transform might be not very intuitive, please read the document below for mo
 
 #### How it works
 
-
 1. Device reads values from each axis
 2. Adds the `bias` value to each axis to make the value close to 0 when the joystick is released
 3. About the `transform` matrix:
@@ -79,7 +78,6 @@ The transform might be not very intuitive, please read the document below for mo
 
 4. If the mouse jitters, gradually increase the `resolution` value until the jitter disappears
 
-
 ## `rust` configuration
 
 Because the `joystick` and `battery` use the same ADC peripheral, they actually use the same `NrfAdc` `input_device`.
@@ -96,9 +94,9 @@ let adc = saadc::SAADC::new(p.SAADC, Irqs, saadc_config,
     ],
 );
 saadc.calibrate().await;
-let mut adc_dev = NrfAdc::new(adc, [AnalogEventType::Battery, AnalogEventType::Joystick(2)], 20 /* polling interval */, Some(350)/* light sleep interval */);
+let mut adc_dev = NrfAdc::new(adc, [AnalogEventType::Battery, AnalogEventType::Joystick(2)], [0, 0], 20 /* polling interval */, Some(350)/* light sleep interval */);
 let mut batt_proc = BatteryProcessor::new(1, 5);
-let mut joy_proc = JoystickProcessor::new([[80, 0], [0, 80]], [29130, 29365], 6, &keymap);
+let mut joy_proc = JoystickProcessor::new(0, [[80, 0], [0, 80]], [29130, 29365], 6, &keymap);
 ...
 run_all!(matrix, adc_dev),
 run_all! {
