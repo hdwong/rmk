@@ -839,6 +839,10 @@ pub(crate) struct HostConfig {
     pub vial_enabled: bool,
     /// Unlock keys for Vial (optional)
     pub unlock_keys: Option<Vec<[u8; 2]>>,
+    /// Start Vial unlocked, bypassing the unlock-key combo (default: false).
+    /// Only has effect with the `vial_lock` feature.
+    #[serde_inline_default(false)]
+    pub vial_insecure: bool,
 }
 
 impl Default for HostConfig {
@@ -846,6 +850,7 @@ impl Default for HostConfig {
         Self {
             vial_enabled: true,
             unlock_keys: None,
+            vial_insecure: false,
         }
     }
 }
