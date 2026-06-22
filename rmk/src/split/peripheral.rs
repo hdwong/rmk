@@ -122,6 +122,17 @@ impl<S: SplitWriter + SplitReader> SplitPeripheral<S> {
                             // directive covering enable / mode / HSV / speed.
                             publish_event(crate::event::RgbStateEvent(state));
                         }
+                        SplitMessage::ShowBattery => {
+                            // Central's "show battery" key was pressed; flash
+                            // this half's own gauge by re-emitting the pulse
+                            // locally for the RGB mirror processor.
+                            publish_event(crate::event::ShowBatteryEvent);
+                        }
+                        SplitMessage::ToggleChargingIndicator => {
+                            // Re-emit locally so this half's RGB mirror flips
+                            // its charging-indicator enable flag in lockstep.
+                            publish_event(crate::event::ToggleChargingIndicatorEvent);
+                        }
                         SplitMessage::Layer(layer) => {
                             // Publish Layer event
                             publish_event(LayerChangeEvent::new(layer));

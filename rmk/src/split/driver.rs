@@ -81,6 +81,8 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
         // snapshot is still delivered to us.
         let mut connection_sub = crate::event::ConnectionStatusChangeEvent::subscriber();
         let mut rgb_sub = crate::event::RgbStateEvent::subscriber();
+        let mut show_battery_sub = crate::event::ShowBatteryEvent::subscriber();
+        let mut toggle_charging_sub = crate::event::ToggleChargingIndicatorEvent::subscriber();
         #[cfg(feature = "_ble")]
         let mut clear_peer_sub = crate::event::ClearPeerEvent::subscriber();
 
@@ -111,6 +113,8 @@ impl<const ROW: usize, const COL: usize, const ROW_OFFSET: usize, const COL_OFFS
                     e = layer_sub.next_event().fuse() => SplitMessage::Layer(e.0),
                     e = connection_sub.next_event().fuse() => SplitMessage::ConnectionStatus(e.0),
                     e = rgb_sub.next_event().fuse() => SplitMessage::RgbState(e.0),
+                    _ = show_battery_sub.next_event().fuse() => SplitMessage::ShowBattery,
+                    _ = toggle_charging_sub.next_event().fuse() => SplitMessage::ToggleChargingIndicator,
                     with_feature("_ble"): _ = clear_peer_sub.next_event().fuse() => {
                         #[cfg(feature = "storage")]
                         {

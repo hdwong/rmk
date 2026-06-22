@@ -36,6 +36,33 @@ impl DefaultLayoutChangeEvent {
 
 impl_payload_wrapper!(DefaultLayoutChangeEvent, u8);
 
+/// Request to briefly show the battery-level gauge on the RGB strip.
+///
+/// Published on the central when the "show battery" user key is pressed
+/// (see `process_user`), and forwarded to the peripheral over the split link
+/// (`SplitMessage::ShowBattery`) so each half flashes its own gauge. The RGB
+/// processors subscribe and light their five gauge LEDs for a few seconds.
+///
+/// Carries no payload — it is a one-shot pulse. `subs = 3` covers the central's
+/// two subscribers (RGB processor + split driver forwarder); the peripheral
+/// only has one (its RGB processor).
+#[event(channel_size = 2, pubs = 1, subs = 3)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ShowBatteryEvent;
+
+/// Toggle whether the RGB charging indicator is shown.
+///
+/// Published on the central when the "toggle charging indicator" user key is
+/// pressed, and forwarded to the peripheral (`SplitMessage::ToggleChargingIndicator`)
+/// so both halves flip together. Each RGB processor keeps its own enable flag
+/// (not persisted — resets to on at boot); receiving this pulse inverts it.
+/// Same `subs = 3` layout as [`ShowBatteryEvent`].
+#[event(channel_size = 2, pubs = 1, subs = 3)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ToggleChargingIndicatorEvent;
+
 /// WPM updated event
 #[event(channel_size = crate::WPM_UPDATE_EVENT_CHANNEL_SIZE, pubs = crate::WPM_UPDATE_EVENT_PUB_SIZE, subs = crate::WPM_UPDATE_EVENT_SUB_SIZE)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

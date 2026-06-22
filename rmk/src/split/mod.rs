@@ -58,4 +58,11 @@ pub(crate) enum SplitMessage {
     /// Battery status, from peripheral to central
     #[cfg(feature = "_ble")]
     BatteryStatus(BatteryStatusEvent),
+    /// Request to show the battery-level gauge, central to peripheral.
+    /// Mirrors the `ShowBatteryEvent` pulse so the peripheral flashes its
+    /// own gauge when the central's "show battery" key is pressed.
+    ShowBattery,
+    /// Toggle the charging indicator on/off, central to peripheral.
+    /// Mirrors the `ToggleChargingIndicatorEvent` pulse so both halves flip.
+    ToggleChargingIndicator,
 }
