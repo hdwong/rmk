@@ -1727,6 +1727,15 @@ impl<'a> Keyboard<'a> {
                     // only meaningful when both transports exist in this build.
                     #[cfg(not(feature = "_no_usb"))]
                     crate::state::toggle_preferred().await;
+                } else if id == NUM_BLE_PROFILE as u8 + 7 {
+                    // Show the battery level. The RGB processors light their
+                    // gauge LEDs for a few seconds; the event is forwarded to
+                    // the peripheral so both halves show their own level.
+                    publish_event(crate::event::ShowBatteryEvent);
+                } else if id == NUM_BLE_PROFILE as u8 + 8 {
+                    // Toggle the charging indicator on/off. Forwarded to the
+                    // peripheral so both halves flip together. Not persisted.
+                    publish_event(crate::event::ToggleChargingIndicatorEvent);
                 }
             }
         }
