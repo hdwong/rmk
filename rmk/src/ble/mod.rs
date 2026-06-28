@@ -801,7 +801,7 @@ async fn advertise<'a, 'b, C: Controller>(
         )
         .await?;
 
-    // Timeout for advertising is 90s
+    // Timeout for advertising is 60s
     match with_timeout(Duration::from_secs(60), advertiser.accept()).await {
         Ok(conn_res) => {
             let conn = conn_res?.with_attribute_server(server)?;
