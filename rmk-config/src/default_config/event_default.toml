@@ -87,6 +87,12 @@ channel_size = 16
 pubs = 1
 subs = 0
 
+# DFU events
+[event.dfu_status]
+channel_size = 2
+pubs = 1
+subs = 1
+
 # RGB on/off state, central->peripheral mirror
 [event.rgb_state]
 channel_size = 1
