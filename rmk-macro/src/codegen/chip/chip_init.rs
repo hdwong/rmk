@@ -58,6 +58,14 @@ pub(crate) fn chip_init_default(hardware: &Hardware, peripheral_id: Option<usize
     } else {
         quote! {}
     };
+    // Only the host-facing central gets a unique local IRK (enabling address
+    // privacy). Split peripherals keep their fixed address so the central can
+    // still find them by address, so they pass `None`.
+    let local_irk = if peripheral_id.is_none() {
+        quote! { Some(::rmk::ble::local_irk_from_address(ble_addr)) }
+    } else {
+        quote! { None }
+    };
     match chip.series {
         ChipSeries::Stm32 => quote! {
                 let config = ::embassy_stm32::Config::default();
@@ -136,6 +144,7 @@ pub(crate) fn chip_init_default(hardware: &Hardware, peripheral_id: Option<usize
                     let stack = ::rmk::ble::build_ble_stack(
                         sdc,
                         ble_addr,
+                        #local_irk,
                         &mut host_resources,
                     )
                     .await;
@@ -206,6 +215,7 @@ pub(crate) fn chip_init_default(hardware: &Hardware, peripheral_id: Option<usize
                     let stack = ::rmk::ble::build_ble_stack(
                         controller,
                         ble_addr,
+                        #local_irk,
                         &mut host_resources,
                     )
                     .await;
@@ -235,6 +245,7 @@ pub(crate) fn chip_init_default(hardware: &Hardware, peripheral_id: Option<usize
                 let stack = ::rmk::ble::build_ble_stack(
                     controller,
                     ble_addr,
+                    #local_irk,
                     &mut host_resources,
                 )
                 .await;
