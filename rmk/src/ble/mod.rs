@@ -5,7 +5,6 @@ use bt_hci::controller::{ControllerCmdAsync, ControllerCmdSync};
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_time::{Duration, Timer, with_timeout};
-use rand_core::{CryptoRng, RngCore};
 use rmk_types::ble::BleState;
 use rmk_types::connection::ConnectionType;
 use rmk_types::led_indicator::LedIndicator;
@@ -21,7 +20,7 @@ use crate::ble::led::BleLedReader;
 use crate::ble::passkey::{PasskeyInputState, next_gatt_event};
 use crate::ble::profile::{ProfileInfo, ProfileManager, UPDATED_CCCD_TABLE, UPDATED_PROFILE};
 use crate::channel::{BLE_REPORT_CHANNEL, LED_SIGNAL};
-use crate::config::RmkConfig;
+use crate::config::{BleBatteryConfig, RmkConfig};
 use crate::core_traits::Runnable;
 use crate::event::SubscribableEvent;
 use crate::hid::{HidWriterTrait, run_led_reader};
@@ -49,23 +48,46 @@ pub(crate) const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + 1;
 /// Max number of L2CAP channels
 pub(crate) const L2CAP_CHANNELS_MAX: usize = CONNECTIONS_MAX * 4; // Signal + att + smp + hid
 
+/// Derive a stable, per-device local Identity Resolving Key (IRK) from the
+/// device's unique BLE address.
+///
+/// During pairing trouble-host distributes the local IRK to the host. With no IRK
+/// configured it sends an all-zero IRK that is identical on every device, so hosts
+/// that key bonds by identity (notably Windows) collapse multiple RMK keyboards
+/// into a single device and reject the second one. Deriving the IRK from the
+/// unique, stable device address gives each keyboard a distinct identity that stays
+/// constant across reboots, so bonded hosts can keep resolving our RPAs.
+///
+/// Note: it is derived from the (public) device address, so it is not secret and
+/// provides no tracking resistance — it only resolves the identity collision. A
+/// CSPRNG-generated IRK persisted to flash would be the hardened version.
+pub fn local_irk_from_address(host_address: [u8; 6]) -> trouble_host::IdentityResolvingKey {
+    // Spread the 48-bit address across the 128-bit key and force a non-zero value.
+    let mut bytes = [0u8; 16];
+    bytes[0..6].copy_from_slice(&host_address);
+    bytes[6..12].copy_from_slice(&host_address);
+    bytes[12..16].copy_from_slice(b"rmk\x01");
+    trouble_host::IdentityResolvingKey::from_le_bytes(bytes).expect("IRK is non-zero by construction")
+}
+
 /// Build the BLE stack.
-pub async fn build_ble_stack<
-    'a,
-    C: Controller + ControllerCmdAsync<LeSetPhy>,
-    P: PacketPool,
-    RNG: RngCore + CryptoRng,
->(
+///
+/// When `local_irk` is `Some`, BLE address privacy is enabled with that IRK so the
+/// device distributes a unique identity during pairing. This is used for the
+/// host-facing central; split peripherals pass `None` to keep their fixed address
+/// for the central link.
+pub async fn build_ble_stack<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(
     controller: C,
     host_address: [u8; 6],
-    random_generator: &mut RNG,
+    local_irk: Option<trouble_host::IdentityResolvingKey>,
     resources: &'a mut HostResources<C, P, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX>,
 ) -> Stack<'a, C, P> {
     // Initialize trouble host stack
-    trouble_host::new(controller, resources)
-        .set_random_address(Address::random(host_address))
-        .set_random_generator_seed(random_generator)
-        .build()
+    let mut builder = trouble_host::new(controller, resources).set_random_address(Address::random(host_address));
+    if let Some(irk) = local_irk {
+        builder = builder.enable_privacy(irk);
+    }
+    builder.build()
 }
 
 /// BLE transport runnable. Owns the trouble-host server and profile manager;
@@ -81,6 +103,7 @@ where
     server: Server<'static>,
     profile_manager: ProfileManager<'b, 's, C, DefaultPacketPool>,
     product_name: &'static str,
+    config: BleBatteryConfig<'b>,
 }
 
 impl<'b, 's, C> BleTransport<'b, 's, C>
@@ -132,6 +155,7 @@ where
             server,
             profile_manager,
             product_name: rmk_config.device_config.product_name,
+            config: rmk_config.ble_battery_config,
         }
     }
 }
@@ -179,6 +203,7 @@ where
                                 stack,
                                 #[cfg(feature = "storage")]
                                 active_bond_info,
+                                &self.config,
                             ),
                             profile_manager.update_profile(),
                         )
@@ -319,7 +344,7 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                 passkey_state.clear();
                 error!("[gatt] pairing error: {:?}", err);
             }
-            GattConnectionEvent::Encrypted { security_level } => {
+            GattConnectionEvent::Encrypted { security_level, .. } => {
                 info!("[gatt] encrypted: {:?}", security_level);
                 set_ble_state(BleState::Connected);
             }
@@ -346,13 +371,23 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                         #[cfg(not(feature = "host"))]
                         let host_control_point_match = false;
 
+                        // trouble-host 0.7 exposes written bytes via a closure; copy them out
+                        // once so the dispatch below (which awaits) can use them freely.
+                        let mut data_buf = [0u8; 32];
+                        let data_len = event.with_data(|_, data| {
+                            let n = data.len().min(data_buf.len());
+                            data_buf[..n].copy_from_slice(&data[..n]);
+                            data.len()
+                        });
+                        let data = &data_buf[..data_len.min(data_buf.len())];
+
                         if event.handle() == output_keyboard.handle {
-                            if event.data().len() == 1 {
-                                let led_indicator = LedIndicator::from_bits(event.data()[0]);
+                            if data_len == 1 {
+                                let led_indicator = LedIndicator::from_bits(data[0]);
                                 debug!("Got keyboard state: {:?}", led_indicator);
                                 LED_SIGNAL.signal(led_indicator);
                             } else {
-                                warn!("Wrong keyboard state data: {:?}", event.data());
+                                warn!("Wrong keyboard state data: {:?}", data);
                             }
                         } else if event.handle() == input_keyboard.cccd_handle.expect("No CCCD for input keyboard")
                             || event.handle() == mouse.cccd_handle.expect("No CCCD for mouse report")
@@ -372,8 +407,7 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                                 // HID Class spec opcodes for the HID Control Point characteristic:
                                 //   - 0: HID_CTRL_SUSPEND
                                 //   - 1: HID_CTRL_EXIT_SUSPEND
-                                let data = event.data();
-                                if data.len() == 1 {
+                                if data_len == 1 {
                                     match data[0] {
                                         0 => CENTRAL_SLEEP.signal(true),
                                         1 => CENTRAL_SLEEP.signal(false),
@@ -384,13 +418,11 @@ async fn gatt_events_task(server: &Server<'_>, conn: &GattConnection<'_, '_, Def
                         } else {
                             #[cfg(feature = "host")]
                             if event.handle() == output_host.handle {
-                                debug!("Got host packet: {:?}", event.data());
-                                if event.data().len() == 32 {
-                                    let mut data = [0u8; 32];
-                                    data.copy_from_slice(event.data());
-                                    crate::channel::enqueue_host_request(ConnectionType::Ble, data).await;
+                                debug!("Got host packet: {:?}", data);
+                                if data_len == 32 {
+                                    crate::channel::enqueue_host_request(ConnectionType::Ble, data_buf).await;
                                 } else {
-                                    warn!("Wrong host packet data: {:?}", event.data());
+                                    warn!("Wrong host packet data: {:?}", data);
                                 }
                             } else if event.handle() == input_host.cccd_handle.expect("No CCCD for input host") {
                                 cccd_updated = true;
@@ -643,10 +675,11 @@ async fn run_ble_keyboard<
     conn: &GattConnection<'a, 'b, DefaultPacketPool>,
     stack: &Stack<'_, C, DefaultPacketPool>,
     #[cfg(feature = "storage")] active_bond_info: Option<crate::ble::profile::ProfileInfo>,
+    config: &BleBatteryConfig<'a>,
 ) {
     let mut ble_hid_server = BleHidServer::new(server, conn);
-    let mut ble_led_reader = BleLedReader {};
-    let mut ble_battery_server = BleBatteryServer::new(server, conn);
+    let mut ble_led_reader = BleLedReader;
+    let mut ble_battery_server = config.enabled.then(|| BleBatteryServer::new(server, conn));
 
     // CCCD lookup uses cached bond info to avoid a cancellable flash read while
     // this future is racing other arms of an outer `select`.
