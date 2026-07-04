@@ -48,46 +48,16 @@ pub(crate) const CONNECTIONS_MAX: usize = crate::SPLIT_PERIPHERALS_NUM + 1;
 /// Max number of L2CAP channels
 pub(crate) const L2CAP_CHANNELS_MAX: usize = CONNECTIONS_MAX * 4; // Signal + att + smp + hid
 
-/// Derive a stable, per-device local Identity Resolving Key (IRK) from the
-/// device's unique BLE address.
-///
-/// During pairing trouble-host distributes the local IRK to the host. With no IRK
-/// configured it sends an all-zero IRK that is identical on every device, so hosts
-/// that key bonds by identity (notably Windows) collapse multiple RMK keyboards
-/// into a single device and reject the second one. Deriving the IRK from the
-/// unique, stable device address gives each keyboard a distinct identity that stays
-/// constant across reboots, so bonded hosts can keep resolving our RPAs.
-///
-/// Note: it is derived from the (public) device address, so it is not secret and
-/// provides no tracking resistance — it only resolves the identity collision. A
-/// CSPRNG-generated IRK persisted to flash would be the hardened version.
-pub fn local_irk_from_address(host_address: [u8; 6]) -> trouble_host::IdentityResolvingKey {
-    // Spread the 48-bit address across the 128-bit key and force a non-zero value.
-    let mut bytes = [0u8; 16];
-    bytes[0..6].copy_from_slice(&host_address);
-    bytes[6..12].copy_from_slice(&host_address);
-    bytes[12..16].copy_from_slice(b"rmk\x01");
-    trouble_host::IdentityResolvingKey::from_le_bytes(bytes).expect("IRK is non-zero by construction")
-}
-
 /// Build the BLE stack.
-///
-/// When `local_irk` is `Some`, BLE address privacy is enabled with that IRK so the
-/// device distributes a unique identity during pairing. This is used for the
-/// host-facing central; split peripherals pass `None` to keep their fixed address
-/// for the central link.
 pub async fn build_ble_stack<'a, C: Controller + ControllerCmdAsync<LeSetPhy>, P: PacketPool>(
     controller: C,
     host_address: [u8; 6],
-    local_irk: Option<trouble_host::IdentityResolvingKey>,
     resources: &'a mut HostResources<C, P, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX>,
 ) -> Stack<'a, C, P> {
     // Initialize trouble host stack
-    let mut builder = trouble_host::new(controller, resources).set_random_address(Address::random(host_address));
-    if let Some(irk) = local_irk {
-        builder = builder.enable_privacy(irk);
-    }
-    builder.build()
+    trouble_host::new(controller, resources)
+        .set_random_address(Address::random(host_address))
+        .build()
 }
 
 /// BLE transport runnable. Owns the trouble-host server and profile manager;
