@@ -1,6 +1,7 @@
 use core::fmt::Debug;
 
 use embassy_embedded_hal::adapter::BlockingAsync;
+use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 use embedded_storage::nor_flash::NorFlash;
@@ -81,6 +82,40 @@ pub(crate) async fn write_peer_address(addr: PeerAddress) -> bool {
     FLASH_OPERATION_FINISHED.reset();
     FLASH_CHANNEL.send(FlashOperationMessage::PeerAddress(addr)).await;
     FLASH_OPERATION_FINISHED.wait().await
+}
+
+/// Persisted RGB lighting state. Single source of truth shared by the event
+/// channel, the split-link wire format, and flash persistence. Written by
+/// user code via [`save_rgb_state`] and loaded once at boot into
+/// [`LOADED_RGB_STATE`] for the user processor to consume.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, MaxSize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RgbState {
+    /// Strip enable.
+    pub enable: bool,
+    /// Effect index — user-defined encoding (e.g. 0 = Solid, 1 = Rainbow, 2 = Reactive).
+    pub mode: u8,
+    /// HSV hue.
+    pub hue: u8,
+    /// HSV saturation (255 = vivid, 0 = white).
+    pub sat: u8,
+    /// HSV value (brightness).
+    pub val: u8,
+    /// Speed level, typically in [-2, +2].
+    pub speed: i8,
+}
+
+/// Saved RGB state read from flash at boot. `None` if nothing was saved yet
+/// (first boot, after a storage clear, or a different build hash). User code
+/// can take this once on first poll and apply it to the runtime processor.
+pub static LOADED_RGB_STATE: Mutex<crate::RawMutex, Option<RgbState>> = Mutex::new(None);
+
+/// Queue a save of the given RGB state to flash. Non-blocking; if the flash
+/// channel is full the request is dropped (the next state change will retry).
+pub fn save_rgb_state(state: RgbState) {
+    FLASH_CHANNEL
+        .try_send(FlashOperationMessage::RgbState(state))
+        .ok();
 }
 
 // Message send from other tasks, which will do saving or clearing operation
@@ -168,6 +203,8 @@ pub(crate) enum FlashOperationMessage {
     #[cfg(feature = "_ble")]
     // Read the persisted active BLE profile number; storage task replies via `ACTIVE_BLE_PROFILE_RESPONSE`.
     ReadActiveBleProfile,
+    // User-controlled RGB lighting state
+    RgbState(RgbState),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -202,6 +239,7 @@ pub(crate) enum StorageKey {
     ActiveBleProfile,
     #[cfg(feature = "_ble")]
     BondInfo(u8),
+    RgbState,
 }
 
 impl StorageKey {
@@ -283,6 +321,7 @@ pub(crate) enum StorageData {
     BondInfo(ProfileInfo),
     #[cfg(feature = "_ble")]
     ActiveBleProfile(u8),
+    RgbState(RgbState),
 }
 
 impl<'a> PostcardValue<'a> for StorageData {}
@@ -504,6 +543,14 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                 let _ = storage.reset_layout_only(keymap, &encoder_map, behavior_config).await;
             }
         }
+
+        // Load persisted user-facing RGB config (if any) so the lighting
+        // processor can pick it up on its first tick.
+        let saved_rgb = match storage.fetch_data(StorageKey::RgbState).await {
+            Some(StorageData::RgbState(c)) => Some(c),
+            _ => None,
+        };
+        *LOADED_RGB_STATE.lock().await = saved_rgb;
 
         storage
     }
@@ -818,6 +865,10 @@ impl<F: AsyncNorFlash, const ROW: usize, const COL: usize, const NUM_LAYER: usiz
                         &StorageData::BehaviorConfig(behavior_config),
                     )
                     .await
+                }
+                FlashOperationMessage::RgbState(state) => {
+                    self.store_data(StorageKey::RgbState, &StorageData::RgbState(state))
+                        .await
                 }
             };
 

@@ -519,6 +519,8 @@ define_event_config!(
     dfu_status,
     // Action events
     action,
+    // RGB state events
+    rgb_state,
 );
 
 /// The `[layout]` section: the physical key arrangement plus the rendered layout.

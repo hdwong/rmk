@@ -46,6 +46,10 @@ pub(crate) enum SplitMessage {
     /// `ConnectionStatus` snapshot of the central.
     /// Synced central → peripheral on every change.
     ConnectionStatus(ConnectionStatus),
+    /// Full RGB state directive (enable + mode + HSV + speed), central to
+    /// peripheral. The peripheral inspects `mode` to decide how to render
+    /// and uses `speed` to scale any local animation (Rainbow / Reactive).
+    RgbState(crate::storage::RgbState),
     /// BLE Address, used in syncing address between central and peripheral
     Address([u8; 6]),
     /// Clear the saved peer info
@@ -101,6 +105,14 @@ pub(crate) enum SplitMessage {
     /// Peripheral → Central: confirm mark_updated succeeded, about to reset.
     #[cfg(feature = "dfu_split")]
     FirmwareUpdateConfirm,
+
+    /// Request to show the battery-level gauge, central to peripheral.
+    /// Mirrors the `ShowBatteryEvent` pulse so the peripheral flashes its
+    /// own gauge when the central's "show battery" key is pressed.
+    ShowBattery,
+    /// Toggle the charging indicator on/off, central to peripheral.
+    /// Mirrors the `ToggleChargingIndicatorEvent` pulse so both halves flip.
+    ToggleChargingIndicator,
 }
 
 // -----------------------------------------------------------------------

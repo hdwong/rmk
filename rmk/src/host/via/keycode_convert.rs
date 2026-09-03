@@ -1,4 +1,4 @@
-use rmk_types::action::{Action, KeyAction, KeyboardAction};
+use rmk_types::action::{Action, KeyAction, KeyboardAction, LightAction};
 use rmk_types::keycode::{HidKeyCode, KeyCode, SpecialKey};
 use rmk_types::modifier::ModifierCombination;
 
@@ -91,6 +91,23 @@ pub(crate) fn to_via_keycode(key_action: KeyAction) -> u16 {
                 }
             },
             Action::User(id) => (id as u16 & 0x1F) | 0x7E00,
+            Action::Light(c) => match c {
+                LightAction::RgbTog => 0x7820,
+                LightAction::RgbModeForward => 0x7821,
+                LightAction::RgbModeReverse => 0x7822,
+                LightAction::RgbHui => 0x7823,
+                LightAction::RgbHud => 0x7824,
+                LightAction::RgbSai => 0x7825,
+                LightAction::RgbSad => 0x7826,
+                LightAction::RgbVai => 0x7827,
+                LightAction::RgbVad => 0x7828,
+                LightAction::RgbSpi => 0x7829,
+                LightAction::RgbSpd => 0x782A,
+                _ => {
+                    warn!("LightAction: {:?} vial is not supported yet", c);
+                    0
+                }
+            },
             _ => {
                 warn!("Action: {:?} in vial is not supported yet", a);
                 0
@@ -225,9 +242,24 @@ pub(crate) fn from_via_keycode(via_keycode: u16) -> KeyAction {
             KeyAction::Single(Action::TriggerMacro(id))
         }
         0x7800..=0x783F => {
-            // TODO: backlight and rgb configuration
-            warn!("Backlight and RGB configuration key not supported");
-            KeyAction::No
+            match via_keycode {
+                0x7820 => KeyAction::Single(Action::Light(LightAction::RgbTog)),
+                0x7821 => KeyAction::Single(Action::Light(LightAction::RgbModeForward)),
+                0x7822 => KeyAction::Single(Action::Light(LightAction::RgbModeReverse)),
+                0x7823 => KeyAction::Single(Action::Light(LightAction::RgbHui)),
+                0x7824 => KeyAction::Single(Action::Light(LightAction::RgbHud)),
+                0x7825 => KeyAction::Single(Action::Light(LightAction::RgbSai)),
+                0x7826 => KeyAction::Single(Action::Light(LightAction::RgbSad)),
+                0x7827 => KeyAction::Single(Action::Light(LightAction::RgbVai)),
+                0x7828 => KeyAction::Single(Action::Light(LightAction::RgbVad)),
+                0x7829 => KeyAction::Single(Action::Light(LightAction::RgbSpi)),
+                0x782A => KeyAction::Single(Action::Light(LightAction::RgbSpd)),
+                _ => {
+                    // TODO: backlight and rgb configuration
+                    warn!("Backlight and RGB configuration key not supported: {:#X}", via_keycode);
+                    KeyAction::No
+                }
+            }
         }
         0x7C00 => KeyAction::Single(Action::KeyboardControl(KeyboardAction::Bootloader)),
         0x7C01 => KeyAction::Single(Action::KeyboardControl(KeyboardAction::Reboot)),

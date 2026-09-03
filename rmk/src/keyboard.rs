@@ -1681,12 +1681,13 @@ impl<'a> Keyboard<'a> {
         }
     }
 
-    /// True when the key is still down 5s later. A release inside the window is
-    /// pushed back to `unprocessed_events`, so it replays as a short press.
+    /// True when the key is still down `ms` later. A release (or any other key
+    /// event) inside the window is pushed back to `unprocessed_events`, so it
+    /// replays as a short press.
     #[cfg(feature = "_ble")]
-    async fn held_for_5s(&mut self) -> bool {
+    async fn held_for(&mut self, ms: u64) -> bool {
         match select(
-            embassy_time::Timer::after_millis(5000),
+            embassy_time::Timer::after_millis(ms),
             self.keyboard_event_subscriber.next_message_pure(),
         )
         .await
@@ -1701,6 +1702,12 @@ impl<'a> Keyboard<'a> {
         }
     }
 
+    /// True when the key is still down 5s later. See [`held_for`](Self::held_for).
+    #[cfg(feature = "_ble")]
+    async fn held_for_5s(&mut self) -> bool {
+        self.held_for(5000).await
+    }
+
     async fn process_user(&mut self, id: u8, event: KeyboardEvent) {
         debug!("Processing user key id: {:?}, event: {:?}", id, event);
 
@@ -1710,13 +1717,27 @@ impl<'a> Keyboard<'a> {
             use crate::ble::profile::BleProfileAction;
             use crate::channel::BLE_PROFILE_CHANNEL;
             if event.pressed {
-                // The uniform gesture across all bond slots: tap switches, a 5s
-                // hold forgets the slot's bond and re-pairs. Holding a profile key
-                // clears that profile and switches to it, so it advertises openly.
-                if id < NUM_BLE_PROFILE as u8 && self.held_for_5s().await {
-                    info!("Profile key held: clearing bond on profile {}", id);
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearSlot(id)).await;
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Switch(id)).await;
+                // Profile keys act on hold, not on tap, so a stray press can't
+                // change profiles: a ~1s hold switches to the profile, and
+                // holding the full 5s also clears its bond and re-pairs. The two
+                // thresholds share one press via a staged wait.
+                if id < NUM_BLE_PROFILE as u8 {
+                    if self.held_for(1000).await {
+                        // Switch to profile
+                        info!("Profile key held 1s: switching to profile {}", id);
+                        BLE_PROFILE_CHANNEL.send(BleProfileAction::Switch(id)).await;
+                        if self.held_for(4000).await {
+                            // If the profile key is held for 5s, clear the bond on the profile
+                            info!("Profile key held 5s: clearing bond on profile {}", id);
+                            BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearSlot(id)).await;
+                        }
+                    }
+                } else if id == NUM_BLE_PROFILE as u8 && self.held_for(1000).await {
+                    // Next profile
+                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Next).await;
+                } else if id == NUM_BLE_PROFILE as u8 + 1 && self.held_for(1000).await {
+                    // Previous profile
+                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Previous).await;
                 }
                 // A 5s hold of the dongle key clears the local dongle bond and goes
                 // seeking, which is how a keyboard moves to a different dongle.
@@ -1734,20 +1755,31 @@ impl<'a> Keyboard<'a> {
                     publish_event(ClearPeerEvent);
                     info!("Clear peer");
                 }
+                // User11: a 3s hold toggles the keyboard layout between Windows
+                // (default layer 0) and macOS (default layer 2), and persists it
+                // so it survives a reboot (mirrors `Action::PersistentDefaultLayer`;
+                // restored at boot via `LayoutConfig` in `read_keymap`).
+                if id == NUM_BLE_PROFILE as u8 + 8 && self.held_for(3000).await {
+                    let current = self.keymap.get_default_layer();
+                    let next = if current == 0 { 2 } else { 0 };
+                    self.keymap.set_default_layer(next);
+                    info!("Layout toggled: default layer {} -> {}", current, next);
+                    // Notify subscribers (e.g. the central RGB processor blinks
+                    // the Esc LED) that the persistent default layout changed.
+                    publish_event(crate::event::DefaultLayoutChangeEvent::new(next));
+                    // Persist only if the layer was valid (set_default_layer
+                    // rejects out-of-range, leaving the default unchanged).
+                    #[cfg(feature = "storage")]
+                    if self.keymap.get_default_layer() == next {
+                        crate::channel::FLASH_CHANNEL
+                            .send(crate::storage::FlashOperationMessage::DefaultLayer(next))
+                            .await;
+                    }
+                }
             } else {
-                // Other user keys are processed when released.
-                // Slots 0..NUM_BLE_PROFILE select a profile directly; the next four are
-                // fixed actions stacked on top.
-                if id < NUM_BLE_PROFILE as u8 {
-                    info!("Switch to profile: {}", id);
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Switch(id)).await;
-                } else if id == NUM_BLE_PROFILE as u8 {
-                    // Next profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Next).await;
-                } else if id == NUM_BLE_PROFILE as u8 + 1 {
-                    // Previous profile
-                    BLE_PROFILE_CHANNEL.send(BleProfileAction::Previous).await;
-                } else if id == NUM_BLE_PROFILE as u8 + 2 {
+                // Profile switching happens on hold (handled above); the keys
+                // below are fixed actions that fire on release.
+                if id == NUM_BLE_PROFILE as u8 + 2 {
                     // Clear bond on current profile
                     BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearBond).await;
                 } else if id == NUM_BLE_PROFILE as u8 + 3 {
@@ -1755,6 +1787,15 @@ impl<'a> Keyboard<'a> {
                     // only meaningful when both transports exist in this build.
                     #[cfg(not(feature = "_no_usb"))]
                     crate::state::toggle_preferred().await;
+                } else if id == NUM_BLE_PROFILE as u8 + 6 {
+                    // Show the battery level. The RGB processors light their
+                    // gauge LEDs for a few seconds; the event is forwarded to
+                    // the peripheral so both halves show their own level.
+                    publish_event(crate::event::ShowBatteryEvent);
+                } else if id == NUM_BLE_PROFILE as u8 + 7 {
+                    // Toggle the charging indicator on/off. Forwarded to the
+                    // peripheral so both halves flip together. Not persisted.
+                    publish_event(crate::event::ToggleChargingIndicatorEvent);
                 }
                 // Short press of the dongle key: switch to the dongle slot. Also runs
                 // after a 5s hold, where it is a no-op (the hold already put the

@@ -19,6 +19,52 @@ impl LayerChangeEvent {
 
 impl_payload_wrapper!(LayerChangeEvent, u8);
 
+/// Default layout (base/default layer) changed event.
+///
+/// Published when the default layer is changed at runtime (e.g. by the
+/// Windows/macOS layout toggle). The payload is the new default layer index.
+/// Unlike [`LayerChangeEvent`], which fires for any momentary layer change,
+/// this fires only when the persistent default layer is updated.
+#[event(channel_size = 1, pubs = 1, subs = 1)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DefaultLayoutChangeEvent(pub u8);
+
+impl DefaultLayoutChangeEvent {
+    pub fn new(layer: u8) -> Self {
+        Self(layer)
+    }
+}
+
+impl_payload_wrapper!(DefaultLayoutChangeEvent, u8);
+
+/// Request to briefly show the battery-level gauge on the RGB strip.
+///
+/// Published on the central when the "show battery" user key is pressed
+/// (see `process_user`), and forwarded to the peripheral over the split link
+/// (`SplitMessage::ShowBattery`) so each half flashes its own gauge. The RGB
+/// processors subscribe and light their five gauge LEDs for a few seconds.
+///
+/// Carries no payload — it is a one-shot pulse. `subs = 3` covers the central's
+/// two subscribers (RGB processor + split driver forwarder); the peripheral
+/// only has one (its RGB processor).
+#[event(channel_size = 2, pubs = 1, subs = 3)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ShowBatteryEvent;
+
+/// Toggle whether the RGB charging indicator is shown.
+///
+/// Published on the central when the "toggle charging indicator" user key is
+/// pressed, and forwarded to the peripheral (`SplitMessage::ToggleChargingIndicator`)
+/// so both halves flip together. Each RGB processor keeps its own enable flag
+/// (not persisted — resets to on at boot); receiving this pulse inverts it.
+/// Same `subs = 3` layout as [`ShowBatteryEvent`].
+#[event(channel_size = 2, pubs = 1, subs = 3)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ToggleChargingIndicatorEvent;
+
 /// WPM updated event
 #[event(channel_size = crate::WPM_UPDATE_EVENT_CHANNEL_SIZE, pubs = crate::WPM_UPDATE_EVENT_PUB_SIZE, subs = crate::WPM_UPDATE_EVENT_SUB_SIZE)]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, MaxSize)]
@@ -60,3 +106,14 @@ impl SleepStateEvent {
 }
 
 impl_payload_wrapper!(SleepStateEvent, bool);
+
+/// RGB directive mirrored from central to peripheral. Wraps the same
+/// [`RgbState`](crate::storage::RgbState) used for persistence and the
+/// split-link wire format — single source of truth for "what the strip
+/// should look like".
+#[event(channel_size = crate::RGB_STATE_EVENT_CHANNEL_SIZE, pubs = crate::RGB_STATE_EVENT_PUB_SIZE, subs = crate::RGB_STATE_EVENT_SUB_SIZE)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct RgbStateEvent(pub crate::storage::RgbState);
+
+impl_payload_wrapper!(RgbStateEvent, crate::storage::RgbState);
