@@ -38,6 +38,25 @@ impl DefaultLayoutChangeEvent {
 
 impl_payload_wrapper!(DefaultLayoutChangeEvent, u8);
 
+/// BLE profile bond-cleared event.
+///
+/// Published when a profile's bond is cleared via a 5s hold of its BT key
+/// (see `process_user` → [`BleProfileAction`](crate::ble::profile::BleProfileAction)::ClearSlot).
+/// The payload is the profile/slot index. The central RGB processor subscribes
+/// and fast-blinks that profile's LED to confirm the clear.
+#[event(channel_size = 1, pubs = 1, subs = 1)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ClearProfileEvent(pub u8);
+
+impl ClearProfileEvent {
+    pub fn new(profile: u8) -> Self {
+        Self(profile)
+    }
+}
+
+impl_payload_wrapper!(ClearProfileEvent, u8);
+
 /// Request to briefly show the battery-level gauge on the RGB strip.
 ///
 /// Published on the central when the "show battery" user key is pressed

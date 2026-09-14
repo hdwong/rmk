@@ -68,8 +68,8 @@ pub use split::ClearPeerEvent;
 #[cfg(feature = "split")]
 pub use split::{CentralConnectedEvent, PeripheralBatteryEvent, PeripheralConnectedEvent};
 pub use state::{
-    DefaultLayoutChangeEvent, LayerChangeEvent, LedIndicatorEvent, RgbStateEvent, ShowBatteryEvent, SleepStateEvent,
-    ToggleChargingIndicatorEvent, WpmUpdateEvent,
+    ClearProfileEvent, DefaultLayoutChangeEvent, LayerChangeEvent, LedIndicatorEvent, RgbStateEvent, ShowBatteryEvent,
+    SleepStateEvent, ToggleChargingIndicatorEvent, WpmUpdateEvent,
 };
 
 /// Trait for event publishers

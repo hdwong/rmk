@@ -1730,6 +1730,9 @@ impl<'a> Keyboard<'a> {
                             // If the profile key is held for 5s, clear the bond on the profile
                             info!("Profile key held 5s: clearing bond on profile {}", id);
                             BLE_PROFILE_CHANNEL.send(BleProfileAction::ClearSlot(id)).await;
+                            // Let subscribers (e.g. the central RGB processor) confirm the
+                            // clear by fast-blinking this profile's LED.
+                            publish_event(crate::event::ClearProfileEvent::new(id));
                         }
                     }
                 } else if id == NUM_BLE_PROFILE as u8 && self.held_for(1000).await {
